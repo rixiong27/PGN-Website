@@ -1,5 +1,6 @@
 import { pool } from "@workspace/db";
 import { ObjectStorageService } from "./objectStorage";
+import { InvalidPhotoError, validatePhotoFile } from "./photoValidation";
 
 const storage = new ObjectStorageService();
 export const PHOTO_GRACE_MS = 24 * 60 * 60 * 1000;
@@ -17,8 +18,9 @@ export async function withPhotoWrite<T>(
     await client.query("BEGIN");
     await client.query("LOCK TABLE pgn_pnms IN SHARE ROW EXCLUSIVE MODE");
     if (path) {
-      if (!path.startsWith("/objects/uploads/")) throw new Error("Invalid photo path");
-      await objects.getObjectEntityFile(path);
+      if (!path.startsWith("/objects/uploads/")) throw new InvalidPhotoError("Invalid photo path");
+      const file = await objects.getObjectEntityFile(path);
+      await validatePhotoFile(file);
     }
     const result = await write(client);
     await client.query("COMMIT");

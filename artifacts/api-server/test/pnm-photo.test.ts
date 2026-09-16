@@ -5,6 +5,7 @@ import express, { type Request } from "express";
 import { createStorageRouter } from "../src/routes/storage";
 import { createRecruitmentRouter } from "../src/routes/recruitment";
 import { ObjectNotFoundError } from "../src/lib/objectStorage";
+import { imageBytes, photoFile } from "./photo-fixtures";
 
 const maxSize = 5 * 1024 * 1024;
 const objectPath = "/objects/uploads/candidate-photo";
@@ -25,7 +26,9 @@ async function fixture(run: (h: {
   request: (path: string, identity?: Identity, body?: unknown, method?: string) => Promise<Response>;
   calls: { uploads: number; reads: string[]; downloads: number; queries: number };
   stored: Map<number, Record<string, unknown>>;
+  setPhoto: (bytes: Buffer, type?: string, size?: number) => void;
 }) => Promise<void>) {
+  let file = photoFile(await imageBytes());
   const calls = { uploads: 0, reads: [] as string[], downloads: 0, queries: 0 };
   const stored = new Map<number, Record<string, unknown>>();
   const auth = (req: Request) => ({ userId: req.header("x-test-user") ?? null });
@@ -70,7 +73,7 @@ async function fixture(run: (h: {
     async getObjectEntityFile(path: string) {
       calls.reads.push(path);
       if (path !== objectPath) throw new ObjectNotFoundError();
-      return { name: path };
+      return file;
     },
     async searchPublicObject() { throw new Error("Unexpected public lookup"); },
     async downloadObject() {
@@ -93,7 +96,8 @@ async function fixture(run: (h: {
   const address = server.address();
   assert.ok(address && typeof address !== "string");
   try {
-    await run({ calls, stored, request: (path, identity, body, method) =>
+    await run({ calls, stored, setPhoto: (bytes, type, size) => { file = photoFile(bytes, type, size); },
+      request: (path, identity, body, method) =>
       fetch(`http://127.0.0.1:${address.port}${path}`, {
         method: method ?? (body === undefined ? "GET" : "POST"),
         headers: { ...(identity ? { "x-test-user": identity } : {}), "Content-Type": "application/json" },
@@ -194,5 +198,34 @@ test("profile photo path persists on create and edit and survives independent re
       assert.equal(stored.get(id)?.photo_path, path);
       await reload(path);
     }
+  });
+});
+
+test("create and edit reject invalid stored photos without changing PNM data", async () => {
+  await fixture(async ({ request, stored, setPhoto }) => {
+    const profile = { firstName: "Test", lastName: "Candidate", photoPath: objectPath };
+    const created = await request("/pnms", "admin", profile);
+    assert.equal(created.status, 201);
+    const { id } = await created.json();
+    const original = structuredClone(stored.get(id));
+    const png = await imageBytes();
+    for (const [bytes, type, size] of [
+      [Buffer.from("<script>alert(1)</script>"), "image/png", undefined],
+      [png, "image/jpeg", undefined],
+      [png, "image/png", png.length + 1],
+      [Buffer.alloc(maxSize + 1), "image/png", 128],
+      [png.subarray(0, 40), "image/png", undefined],
+    ] as [Buffer, string, number | undefined][]) {
+      setPhoto(bytes, type, size);
+      for (const [path, method] of [["/pnms", "POST"], [`/pnms/${id}`, "PATCH"]]) {
+        const response = await request(path, "admin", { ...profile, firstName: "Changed" }, method);
+        assert.equal(response.status, 400);
+        assert.ok((await response.json()).error);
+        assert.equal(stored.size, 1);
+        assert.deepEqual(stored.get(id), original);
+      }
+    }
+    // Removing a photo does not require the old bytes to remain valid.
+    assert.equal((await request(`/pnms/${id}`, "admin", { ...profile, photoPath: null }, "PATCH")).status, 200);
   });
 });

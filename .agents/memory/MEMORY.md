@@ -1,2 +1,3 @@
 - [Route hot-reload stability](route-hot-reload-stability.md) — keep full reloads while route components share one large module; Fast Refresh caused cross-page hook failures.
 - [Pre-approved member linking](preapproved-member-linking.md) — Admin-created members use an email-bound placeholder until their first Clerk request links the real identity.
+- [Photo verification constraints](photo-verification.md) — decode images with bounded resource use; rejected uploads remain subject to delayed cleanup.

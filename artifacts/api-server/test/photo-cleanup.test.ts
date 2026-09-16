@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { cleanupPhotos, PHOTO_GRACE_MS, withPhotoWrite } from "../src/lib/photoCleanup";
+import { imageBytes, photoFile } from "./photo-fixtures";
 
 const now = Date.parse("2026-09-16T12:00:00.000Z");
 const oldCreated = new Date(now - PHOTO_GRACE_MS - 1);
@@ -230,7 +231,7 @@ test("withPhotoWrite acquires the table lock before checking that the object exi
   const objects = {
     async getObjectEntityFile(path: string) {
       events.push(`exists:${path}`);
-      return { name: path };
+      return photoFile(await imageBytes());
     },
   };
   const result = await withPhotoWrite(
@@ -289,7 +290,7 @@ test("withPhotoWrite rolls back when the database write fails", async () => {
   const objects = {
     async getObjectEntityFile(path: string) {
       events.push(`exists:${path}`);
-      return { name: path };
+      return photoFile(await imageBytes());
     },
   };
 

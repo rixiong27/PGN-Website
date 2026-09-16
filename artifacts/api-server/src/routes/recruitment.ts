@@ -3,6 +3,7 @@ import { Router, type IRouter, type NextFunction, type Request, type Response } 
 import { pool } from "@workspace/db";
 import { withPhotoWrite } from "../lib/photoCleanup";
 import { ObjectStorageService } from "../lib/objectStorage";
+import { InvalidPhotoError } from "../lib/photoValidation";
 import {
   ApproveMemberParams,
   CastVoteBody,
@@ -808,6 +809,14 @@ router.get("/activity", requireRole("super_admin", "admin"), async (req, res): P
   const limit = parsed.success ? parsed.data.limit ?? 50 : 50;
   const result = await activePool.query("SELECT * FROM pgn_activity ORDER BY created_at DESC LIMIT $1", [limit]);
   res.json(result.rows.map((row) => ({ id: row.id, actorName: row.actor_name, action: row.action, target: row.target, createdAt: new Date(row.created_at).toISOString() })));
+});
+
+router.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
+  if (error instanceof InvalidPhotoError) {
+    res.status(400).json({ error: error.message });
+    return;
+  }
+  next(error);
 });
 
 export default router;

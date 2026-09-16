@@ -1,4 +1,5 @@
 import { Readable } from 'stream';
+import { MAX_PHOTO_BYTES, PHOTO_CONTENT_TYPES } from '../lib/photoValidation';
 import { getAuth as clerkGetAuth } from '@clerk/express';
 import {
   RequestUploadUrlBody,
@@ -75,8 +76,7 @@ router.post(
 
     try {
       const { name, size, contentType } = parsed.data;
-      const allowedContentTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
-      if (!allowedContentTypes.has(contentType) || size > 5 * 1024 * 1024) {
+      if (!PHOTO_CONTENT_TYPES.has(contentType) || size <= 0 || size > MAX_PHOTO_BYTES) {
         res.status(400).json({
           error: 'PNM photos must be JPG, PNG, or WebP images no larger than 5 MB',
         });
