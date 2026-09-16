@@ -41,6 +41,27 @@ export class ObjectNotFoundError extends Error {
 export class ObjectStorageService {
   constructor() {}
 
+  async *listPhotoUploads() {
+    const { bucketName, objectName } = parseObjectPath(
+      `${this.getPrivateObjectDir().replace(/\/$/, '')}/uploads/`,
+    );
+    const stream = objectStorageClient.bucket(bucketName).getFilesStream({ prefix: objectName });
+    for await (const file of stream) {
+      const upload = file as File;
+      const suffix = upload.name.slice(objectName.length);
+      // Only objects minted by the upload endpoint; never other private assets.
+      if (!/^[0-9a-f-]{36}$/i.test(suffix)) continue;
+      yield {
+        objectPath: `/objects/uploads/${suffix}`,
+        metadata: upload.metadata,
+        delete: () => upload.delete({
+          ignoreNotFound: true,
+          ifGenerationMatch: upload.metadata.generation,
+        }),
+      };
+    }
+  }
+
   getPublicObjectSearchPaths(): Array<string> {
     const pathsStr = process.env.PUBLIC_OBJECT_SEARCH_PATHS || '';
     const paths = Array.from(

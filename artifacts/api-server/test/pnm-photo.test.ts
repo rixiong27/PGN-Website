@@ -30,8 +30,10 @@ async function fixture(run: (h: {
   const stored = new Map<number, Record<string, unknown>>();
   const auth = (req: Request) => ({ userId: req.header("x-test-user") ?? null });
   const pool = {
+    async connect() { return { query: pool.query, release() {} }; },
     async query(sql: string, values: unknown[] = []) {
       calls.queries++;
+      if (["BEGIN", "COMMIT", "ROLLBACK"].includes(sql) || sql.startsWith("LOCK TABLE")) return { rows: [] };
       if (sql.includes("FROM pgn_users")) {
         const user = String(values[0]) as keyof typeof identities;
         const identity = identities[user];
@@ -85,7 +87,7 @@ async function fixture(run: (h: {
     next();
   });
   app.use(createStorageRouter({ getAuth: auth as never, pool: pool as never, objectStorageService: service as never }));
-  app.use(createRecruitmentRouter({ getAuth: auth as never, pool: pool as never }));
+  app.use(createRecruitmentRouter({ getAuth: auth as never, pool: pool as never, photoStorage: service as never }));
   const server = app.listen(0, "127.0.0.1");
   await once(server, "listening");
   const address = server.address();

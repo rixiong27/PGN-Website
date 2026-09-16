@@ -1,6 +1,8 @@
 import { getAuth as clerkGetAuth } from "@clerk/express";
 import { Router, type IRouter, type NextFunction, type Request, type Response } from "express";
 import { pool } from "@workspace/db";
+import { withPhotoWrite } from "../lib/photoCleanup";
+import { ObjectStorageService } from "../lib/objectStorage";
 import {
   ApproveMemberParams,
   CastVoteBody,
@@ -32,6 +34,7 @@ import {
 const router: IRouter = Router();
 let activePool = pool;
 let activeGetAuth = clerkGetAuth;
+let activePhotoStorage = new ObjectStorageService();
 type Role = "super_admin" | "admin" | "member" | "pending";
 type VotingMode = "binary" | "numeric";
 type VoteChoice = "yes" | "no";
@@ -65,10 +68,12 @@ type BinaryRoundSnapshot = {
 type RecruitmentDependencies = {
   pool: typeof pool;
   getAuth: typeof clerkGetAuth;
+  photoStorage: ObjectStorageService;
 };
 
 export function createRecruitmentRouter(dependencies?: Partial<RecruitmentDependencies>): IRouter {
   activePool = dependencies?.pool ?? pool;
+  activePhotoStorage = dependencies?.photoStorage ?? new ObjectStorageService();
   activeGetAuth = dependencies?.getAuth ?? clerkGetAuth;
   return router;
 }
@@ -413,11 +418,11 @@ router.post("/pnms", requireRole("super_admin", "admin"), async (req: AuthedRequ
   const parsed = CreatePnmBody.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.message }); return; }
   const p = parsed.data;
-  const inserted = await activePool.query(
+  const inserted = await withPhotoWrite(activePool, p.photoPath, (client) => client.query(
     `INSERT INTO pgn_pnms (first_name,last_name,pronouns,email,year,major,minor,gpa,photo_path,status,semester)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
     [p.firstName.trim(), p.lastName.trim(), p.pronouns || null, p.email || null, p.year || null, p.major || null, p.minor || null, p.gpa ?? null, p.photoPath || null, p.status ?? "new", p.semester || null],
-  );
+  ), activePhotoStorage);
   await logActivity(req.member!, "Added PNM", `${p.firstName} ${p.lastName}`);
   res.status(201).json(pnmView({ ...inserted.rows[0], average_vote: null, vote_count: 0 }));
 });
@@ -466,11 +471,11 @@ router.patch("/pnms/:id", requireRole("super_admin", "admin"), async (req: Authe
   const parsed = UpdatePnmBody.safeParse(req.body);
   if (!params.success || !parsed.success) { res.status(400).json({ error: "Invalid PNM data" }); return; }
   const p = parsed.data;
-  const updated = await activePool.query(
+  const updated = await withPhotoWrite(activePool, p.photoPath, (client) => client.query(
     `UPDATE pgn_pnms SET first_name=$1,last_name=$2,pronouns=$3,email=$4,year=$5,major=$6,minor=$7,gpa=$8,photo_path=$9,status=$10,semester=$11,updated_at=NOW()
      WHERE id=$12 RETURNING *`,
     [p.firstName, p.lastName, p.pronouns || null, p.email || null, p.year || null, p.major || null, p.minor || null, p.gpa ?? null, p.photoPath || null, p.status ?? "new", p.semester || null, params.data.id],
-  );
+  ), activePhotoStorage);
   if (!updated.rows[0]) { res.status(404).json({ error: "PNM not found" }); return; }
   await logActivity(req.member!, "Updated PNM", `${p.firstName} ${p.lastName}`);
   res.json(pnmView({ ...updated.rows[0], average_vote: null, vote_count: 0 }));

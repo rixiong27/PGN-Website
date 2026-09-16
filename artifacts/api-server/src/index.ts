@@ -2,6 +2,7 @@ import app from "./app";
 import { logger } from "./lib/logger";
 import { pool } from "@workspace/db";
 import { applyRecruitmentMigration } from "./lib/recruitmentMigration";
+import { startPhotoCleanup } from "./lib/photoCleanupScheduler";
 
 const rawPort = process.env["PORT"];
 
@@ -26,6 +27,7 @@ async function start(): Promise<void> {
     }
 
     logger.info({ port }, "Server listening");
+    startPhotoCleanup();
   });
 }
 
