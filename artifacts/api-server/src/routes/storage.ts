@@ -1,10 +1,10 @@
 import { Readable } from 'stream';
-import { getAuth } from '@clerk/express';
+import { getAuth as clerkGetAuth } from '@clerk/express';
 import {
   RequestUploadUrlBody,
   RequestUploadUrlResponse,
 } from '@workspace/api-zod';
-import { pool } from '@workspace/db';
+import { pool as defaultPool } from '@workspace/db';
 import { Router, type IRouter, type Request, type Response } from 'express';
 
 import {
@@ -12,8 +12,19 @@ import {
   ObjectStorageService,
 } from '../lib/objectStorage';
 
+type StorageDependencies = {
+  getAuth: typeof clerkGetAuth;
+  pool: Pick<typeof defaultPool, 'query'>;
+  objectStorageService: Pick<ObjectStorageService,
+    'getObjectEntityUploadURL' | 'normalizeObjectEntityPath' |
+    'searchPublicObject' | 'downloadObject' | 'getObjectEntityFile'>;
+};
+
+export function createStorageRouter(dependencies: Partial<StorageDependencies> = {}): IRouter {
 const router: IRouter = Router();
-const objectStorageService = new ObjectStorageService();
+const getAuth = dependencies.getAuth ?? clerkGetAuth;
+const pool = dependencies.pool ?? defaultPool;
+const objectStorageService = dependencies.objectStorageService ?? new ObjectStorageService();
 
 type StorageMember = {
   role: 'super_admin' | 'admin' | 'member' | 'pending';
@@ -191,4 +202,7 @@ router.get('/storage/objects/*path', async (req: Request, res: Response) => {
   }
 });
 
-export default router;
+return router;
+}
+
+export default createStorageRouter();
