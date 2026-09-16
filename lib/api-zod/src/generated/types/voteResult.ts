@@ -6,12 +6,22 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { AdminVote } from './adminVote';
+import type { VoteResultMyChoice } from './voteResultMyChoice';
 
 export interface VoteResult {
   pnmId: number;
   pnmName: string;
   /** @nullable */
-  average: number | null;
+  average?: number | null;
   voteCount: number;
+  yesCount?: number;
+  noCount?: number;
+  notVotedCount?: number;
+  electorateCount?: number;
+  yesPercentage?: number;
+  noPercentage?: number;
+  notVotedPercentage?: number;
+  /** @nullable */
+  myChoice?: VoteResultMyChoice;
   votes?: AdminVote[];
 }

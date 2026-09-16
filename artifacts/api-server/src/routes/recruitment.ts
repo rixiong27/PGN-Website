@@ -33,8 +33,34 @@ const router: IRouter = Router();
 let activePool = pool;
 let activeGetAuth = clerkGetAuth;
 type Role = "super_admin" | "admin" | "member" | "pending";
+type VotingMode = "binary" | "numeric";
+type VoteChoice = "yes" | "no";
 type MemberRow = { id: number; clerk_id: string; name: string; email: string; role: Role; status: string; created_at: Date };
 type AuthedRequest = Request & { member?: MemberRow };
+type BinaryVoteSnapshot = {
+  choice: VoteChoice;
+  voterId: number;
+  memberName: string;
+  createdAt: string;
+};
+type BinaryResultSnapshot = {
+  pnmId: number;
+  pnmName: string;
+  voteCount: number;
+  yesCount: number;
+  noCount: number;
+  notVotedCount: number;
+  electorateCount: number;
+  yesPercentage: number;
+  noPercentage: number;
+  notVotedPercentage: number;
+  votes: BinaryVoteSnapshot[];
+};
+type BinaryRoundSnapshot = {
+  voteCount: number;
+  electorateCount: number;
+  results: BinaryResultSnapshot[];
+};
 
 type RecruitmentDependencies = {
   pool: typeof pool;
@@ -82,6 +108,95 @@ function pnmView(row: Record<string, unknown>) {
     createdAt: new Date(row.created_at as string | Date).toISOString(),
     updatedAt: new Date(row.updated_at as string | Date).toISOString(),
   };
+}
+
+function voteChoice(score: unknown): VoteChoice | null {
+  if (score === null || score === undefined) return null;
+  if (Number(score) === 1) return "yes";
+  if (Number(score) === 0) return "no";
+  return null;
+}
+
+function percentage(count: number, total: number): number {
+  return total > 0 ? Number(((count / total) * 100).toFixed(1)) : 0;
+}
+
+async function activeElectorateCount(): Promise<number> {
+  const result = await activePool.query<{ count: number | string }>(
+    "SELECT COUNT(*)::int AS count FROM pgn_users WHERE status='active' AND role IN ('member','admin','super_admin')",
+  );
+  return Number(result.rows[0]?.count ?? 0);
+}
+
+async function withTransaction<T>(
+  callback: (client: typeof activePool) => Promise<T>,
+): Promise<T> {
+  const client = await activePool.connect();
+  try {
+    await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+    const value = await callback(client as unknown as typeof activePool);
+    await client.query("COMMIT");
+    return value;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+function votingRoundView(
+  round: Record<string, any>,
+  voteCount: number,
+  electorateCount?: number | null,
+) {
+  const mode: VotingMode = round.voting_mode === "binary" ? "binary" : "numeric";
+  return {
+    id: round.id,
+    name: round.name,
+    status: round.status,
+    votingMode: mode,
+    pnmIds: round.pnm_ids,
+    deadline: round.deadline?.toISOString?.() ?? round.deadline ?? null,
+    openedAt: new Date(round.opened_at).toISOString(),
+    closedAt: round.closed_at ? new Date(round.closed_at).toISOString() : null,
+    voteCount,
+    electorateCount: electorateCount ?? (round.electorate_count == null ? null : Number(round.electorate_count)),
+  };
+}
+
+function binarySnapshot(row: Record<string, unknown>): BinaryRoundSnapshot | null {
+  const snapshot = row.results_snapshot;
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return null;
+  const candidate = snapshot as Partial<BinaryRoundSnapshot>;
+  if (!Array.isArray(candidate.results)) return null;
+  return {
+    voteCount: Number(candidate.voteCount ?? 0),
+    electorateCount: Number(candidate.electorateCount ?? 0),
+    results: candidate.results as BinaryResultSnapshot[],
+  };
+}
+
+function binaryResultView(result: BinaryResultSnapshot, viewerId: number, isAdmin: boolean) {
+  const myVote = result.votes.find((vote) => vote.voterId === viewerId);
+  return {
+    pnmId: result.pnmId,
+    pnmName: result.pnmName,
+    voteCount: result.voteCount,
+    yesCount: result.yesCount,
+    noCount: result.noCount,
+    notVotedCount: result.notVotedCount,
+    electorateCount: result.electorateCount,
+    yesPercentage: result.yesPercentage,
+    noPercentage: result.noPercentage,
+    notVotedPercentage: result.notVotedPercentage,
+    myChoice: myVote?.choice ?? null,
+    ...(isAdmin ? { votes: result.votes } : {}),
+  };
+}
+
+function roundVoteCount(round: Record<string, unknown>, fallback: number): number {
+  return binarySnapshot(round)?.voteCount ?? fallback;
 }
 
 async function ensureMember(req: AuthedRequest, res: Response, next: NextFunction): Promise<void> {
@@ -137,8 +252,10 @@ async function logActivity(actor: MemberRow, action: string, target: string): Pr
 
 async function selectPnm(id: number) {
   const result = await activePool.query(
-    `SELECT p.*, AVG(v.score) AS average_vote, COUNT(v.id)::int AS vote_count
+    `SELECT p.*, AVG(v.score) FILTER (WHERE r.voting_mode = 'numeric' OR (r.voting_mode IS NULL AND r.status = 'closed')) AS average_vote,
+       COUNT(v.id) FILTER (WHERE r.voting_mode = 'numeric' OR (r.voting_mode IS NULL AND r.status = 'closed'))::int AS vote_count
      FROM pgn_pnms p LEFT JOIN pgn_votes v ON v.pnm_id = p.id
+     LEFT JOIN pgn_voting_rounds r ON r.id = v.round_id
      WHERE p.id = $1 GROUP BY p.id`,
     [id],
   );
@@ -233,11 +350,15 @@ router.get("/dashboard", async (_req, res): Promise<void> => {
     activePool.query("SELECT COUNT(*)::int AS count FROM pgn_pnms WHERE archived = false"),
     activePool.query("SELECT COUNT(*)::int AS count FROM pgn_users WHERE role = 'pending'"),
     activePool.query("SELECT status, COUNT(*)::int AS count FROM pgn_pnms WHERE archived = false GROUP BY status ORDER BY status"),
-    activePool.query(`SELECT r.*, COUNT(v.id)::int AS vote_count FROM pgn_voting_rounds r
-      LEFT JOIN pgn_votes v ON v.round_id = r.id WHERE r.status = 'open'
+    activePool.query(`SELECT r.*, COUNT(voter.id)::int AS vote_count FROM pgn_voting_rounds r
+      LEFT JOIN pgn_votes v ON v.round_id = r.id
+      LEFT JOIN pgn_users voter ON voter.id = v.voter_id
+        AND voter.status = 'active' AND voter.role IN ('member','admin','super_admin')
+      WHERE r.status = 'open'
       GROUP BY r.id ORDER BY r.opened_at DESC`),
   ]);
   const user = (_req as AuthedRequest).member!;
+  const openElectorate = await activeElectorateCount();
   const outstanding = await activePool.query(
     `SELECT COUNT(*)::int AS count FROM pgn_voting_rounds r
      JOIN LATERAL unnest(r.pnm_ids) AS ids(pnm_id) ON true
@@ -250,11 +371,11 @@ router.get("/dashboard", async (_req, res): Promise<void> => {
     activePnms: Number(active.rows[0]?.count ?? 0),
     pendingApprovals: Number(pending.rows[0]?.count ?? 0),
     pipeline: pipeline.rows,
-    openRounds: rounds.rows.map((round) => ({
-      id: round.id, name: round.name, status: round.status, pnmIds: round.pnm_ids,
-      deadline: round.deadline?.toISOString?.() ?? round.deadline ?? null,
-      openedAt: new Date(round.opened_at).toISOString(), closedAt: null, voteCount: Number(round.vote_count ?? 0),
-    })),
+    openRounds: rounds.rows.map((round) => votingRoundView(
+      round,
+      roundVoteCount(round, Number(round.vote_count ?? 0)),
+      openElectorate,
+    )),
     outstandingVotes: Number(outstanding.rows[0]?.count ?? 0),
   });
 });
@@ -278,8 +399,10 @@ router.get("/pnms", async (req, res): Promise<void> => {
   const sortMap: Record<string, string> = { name: "p.last_name, p.first_name", year: "p.year", major: "p.major", status: "p.status", score: "average_vote DESC NULLS LAST" };
   const order = sortMap[query.sort ?? "name"] ?? sortMap.name;
   const result = await activePool.query(
-    `SELECT p.*, AVG(v.score) AS average_vote, COUNT(v.id)::int AS vote_count
+    `SELECT p.*, AVG(v.score) FILTER (WHERE r.voting_mode = 'numeric' OR (r.voting_mode IS NULL AND r.status = 'closed')) AS average_vote,
+       COUNT(v.id) FILTER (WHERE r.voting_mode = 'numeric' OR (r.voting_mode IS NULL AND r.status = 'closed'))::int AS vote_count
      FROM pgn_pnms p LEFT JOIN pgn_votes v ON v.pnm_id = p.id
+     LEFT JOIN pgn_voting_rounds r ON r.id = v.round_id
      WHERE ${where.join(" AND ")} GROUP BY p.id ORDER BY ${order}`,
     values,
   );
@@ -389,19 +512,25 @@ router.patch("/notes/:id/pin", requireRole("super_admin", "admin"), async (req, 
 });
 
 router.get("/voting/rounds", async (req, res): Promise<void> => {
-  const result = await activePool.query(`SELECT r.*, COUNT(v.id)::int AS vote_count FROM pgn_voting_rounds r LEFT JOIN pgn_votes v ON v.round_id = r.id GROUP BY r.id ORDER BY r.opened_at DESC`);
-  res.json(result.rows.map((round) => ({
-    id: round.id, name: round.name, status: round.status, pnmIds: round.pnm_ids, deadline: round.deadline?.toISOString?.() ?? round.deadline ?? null,
-    openedAt: new Date(round.opened_at).toISOString(), closedAt: round.closed_at ? new Date(round.closed_at).toISOString() : null, voteCount: Number(round.vote_count ?? 0),
-  })));
+  const result = await activePool.query(`SELECT r.*, COUNT(voter.id)::int AS vote_count FROM pgn_voting_rounds r
+    LEFT JOIN pgn_votes v ON v.round_id = r.id
+    LEFT JOIN pgn_users voter ON voter.id = v.voter_id
+      AND voter.status = 'active' AND voter.role IN ('member','admin','super_admin')
+    GROUP BY r.id ORDER BY r.opened_at DESC`);
+  const openElectorate = await activeElectorateCount();
+  res.json(result.rows.map((round) => votingRoundView(
+    round,
+    roundVoteCount(round, Number(round.vote_count ?? 0)),
+    round.status === "open" ? openElectorate : round.electorate_count,
+  )));
 });
 
 router.post("/voting/rounds", requireRole("super_admin", "admin"), async (req, res): Promise<void> => {
   const parsed = CreateVotingRoundBody.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.message }); return; }
-  const result = await activePool.query("INSERT INTO pgn_voting_rounds (name, pnm_ids, deadline) VALUES ($1,$2,$3) RETURNING *", [parsed.data.name, parsed.data.pnmIds, parsed.data.deadline ?? null]);
+  const result = await activePool.query("INSERT INTO pgn_voting_rounds (name, voting_mode, pnm_ids, deadline) VALUES ($1,'binary',$2,$3) RETURNING *", [parsed.data.name, parsed.data.pnmIds, parsed.data.deadline ?? null]);
   const round = result.rows[0];
-  res.status(201).json({ id: round.id, name: round.name, status: round.status, pnmIds: round.pnm_ids, deadline: round.deadline?.toISOString?.() ?? null, openedAt: new Date(round.opened_at).toISOString(), closedAt: null, voteCount: 0 });
+  res.status(201).json(votingRoundView(round, 0, await activeElectorateCount()));
 });
 
 router.get("/voting/rounds/:id", async (req: AuthedRequest, res): Promise<void> => {
@@ -410,46 +539,197 @@ router.get("/voting/rounds/:id", async (req: AuthedRequest, res): Promise<void> 
   const roundResult = await activePool.query("SELECT * FROM pgn_voting_rounds WHERE id = $1", [params.data.id]);
   const round = roundResult.rows[0];
   if (!round) { res.status(404).json({ error: "Voting round not found" }); return; }
-  const results = await activePool.query(
-    `SELECT p.id AS pnm_id, p.first_name || ' ' || p.last_name AS pnm_name, AVG(v.score) AS average, COUNT(v.id)::int AS vote_count
-     FROM pgn_pnms p LEFT JOIN pgn_votes v ON v.pnm_id = p.id AND v.round_id = $1
-     WHERE p.id = ANY($2::int[]) GROUP BY p.id ORDER BY p.last_name`,
-    [round.id, round.pnm_ids],
-  );
+  const mode: VotingMode = round.voting_mode === "binary" ? "binary" : "numeric";
   const isAdmin = req.member!.role === "admin" || req.member!.role === "super_admin";
-  const detail = await Promise.all(results.rows.map(async (row) => {
-    const item: Record<string, unknown> = { pnmId: row.pnm_id, pnmName: row.pnm_name, average: row.average == null ? null : Number(Number(row.average).toFixed(2)), voteCount: Number(row.vote_count) };
-    if (isAdmin) {
-      const votes = await activePool.query("SELECT v.score, u.name AS member_name, v.created_at FROM pgn_votes v JOIN pgn_users u ON u.id = v.voter_id WHERE v.round_id = $1 AND v.pnm_id = $2 ORDER BY v.created_at", [round.id, row.pnm_id]);
-      item.votes = votes.rows.map((vote) => ({ score: vote.score, memberName: vote.member_name, createdAt: new Date(vote.created_at).toISOString() }));
-    }
-    return item;
-  }));
-  res.json({ id: round.id, name: round.name, status: round.status, pnmIds: round.pnm_ids, deadline: round.deadline?.toISOString?.() ?? null, openedAt: new Date(round.opened_at).toISOString(), closedAt: round.closed_at ? new Date(round.closed_at).toISOString() : null, voteCount: results.rows.reduce((total, row) => total + Number(row.vote_count), 0), results: detail });
+  const snapshot = mode === "binary" && round.status === "closed" ? binarySnapshot(round) : null;
+  const electorateCount = mode === "binary"
+    ? (snapshot?.electorateCount ?? (round.status === "closed" ? Number(round.electorate_count ?? 0) : await activeElectorateCount()))
+    : null;
+  let detail: Record<string, unknown>[];
+  let voteCount: number;
+  if (snapshot) {
+    detail = snapshot.results.map((result) => binaryResultView(result, req.member!.id, isAdmin));
+    voteCount = snapshot.voteCount;
+  } else {
+    const results = mode === "binary"
+      ? await activePool.query(
+        `SELECT p.id AS pnm_id, p.first_name || ' ' || p.last_name AS pnm_name,
+           COUNT(voter.id)::int AS vote_count,
+           COUNT(voter.id) FILTER (WHERE v.score = 1)::int AS yes_count,
+           COUNT(voter.id) FILTER (WHERE v.score = 0)::int AS no_count,
+           MAX(v.score) FILTER (WHERE v.voter_id = $3 AND voter.id IS NOT NULL)::int AS my_score
+         FROM pgn_pnms p LEFT JOIN pgn_votes v ON v.pnm_id = p.id AND v.round_id = $1
+         LEFT JOIN pgn_users voter ON voter.id = v.voter_id
+           AND voter.status = 'active' AND voter.role IN ('member','admin','super_admin')
+         WHERE p.id = ANY($2::int[]) GROUP BY p.id ORDER BY p.last_name`,
+        [round.id, round.pnm_ids, req.member!.id],
+      )
+      : await activePool.query(
+        `SELECT p.id AS pnm_id, p.first_name || ' ' || p.last_name AS pnm_name, AVG(v.score) AS average, COUNT(v.id)::int AS vote_count
+         FROM pgn_pnms p LEFT JOIN pgn_votes v ON v.pnm_id = p.id AND v.round_id = $1
+         WHERE p.id = ANY($2::int[]) GROUP BY p.id ORDER BY p.last_name`,
+        [round.id, round.pnm_ids],
+      );
+    voteCount = results.rows.reduce((total, row) => total + Number(row.vote_count ?? 0), 0);
+    detail = await Promise.all(results.rows.map(async (row) => {
+      if (mode === "binary") {
+        const yesCount = Number(row.yes_count ?? 0);
+        const noCount = Number(row.no_count ?? 0);
+        const candidate: Record<string, unknown> = {
+          pnmId: row.pnm_id,
+          pnmName: row.pnm_name,
+          voteCount: Number(row.vote_count ?? 0),
+          yesCount,
+          noCount,
+          notVotedCount: Math.max(electorateCount! - Number(row.vote_count ?? 0), 0),
+          electorateCount,
+          yesPercentage: percentage(yesCount, electorateCount!),
+          noPercentage: percentage(noCount, electorateCount!),
+          notVotedPercentage: percentage(Math.max(electorateCount! - Number(row.vote_count ?? 0), 0), electorateCount!),
+          myChoice: voteChoice(row.my_score),
+        };
+        if (isAdmin) {
+          const votes = await activePool.query("SELECT v.score, u.id AS voter_id, u.name AS member_name, v.created_at FROM pgn_votes v JOIN pgn_users u ON u.id = v.voter_id AND u.status = 'active' AND u.role IN ('member','admin','super_admin') WHERE v.round_id = $1 AND v.pnm_id = $2 ORDER BY v.created_at", [round.id, row.pnm_id]);
+          candidate.votes = votes.rows.map((vote) => ({
+            choice: voteChoice(vote.score),
+            voterId: vote.voter_id,
+            memberName: vote.member_name,
+            createdAt: new Date(vote.created_at).toISOString(),
+          }));
+        }
+        return candidate;
+      }
+      const candidate: Record<string, unknown> = { pnmId: row.pnm_id, pnmName: row.pnm_name, average: row.average == null ? null : Number(Number(row.average).toFixed(2)), voteCount: Number(row.vote_count) };
+      if (isAdmin) {
+        const votes = await activePool.query("SELECT v.score, u.name AS member_name, v.created_at FROM pgn_votes v JOIN pgn_users u ON u.id = v.voter_id WHERE v.round_id = $1 AND v.pnm_id = $2 ORDER BY v.created_at", [round.id, row.pnm_id]);
+        candidate.votes = votes.rows.map((vote) => ({ score: vote.score, memberName: vote.member_name, createdAt: new Date(vote.created_at).toISOString() }));
+      }
+      return candidate;
+    }));
+  }
+  res.json({
+    ...votingRoundView(round, voteCount, electorateCount),
+    results: detail,
+  });
 });
 
 router.post("/voting/rounds/:id/close", requireRole("super_admin", "admin"), async (req, res): Promise<void> => {
   const params = CloseVotingRoundParams.safeParse(req.params);
   if (!params.success) { res.status(400).json({ error: params.error.message }); return; }
-  const result = await activePool.query("UPDATE pgn_voting_rounds SET status='closed', closed_at=NOW() WHERE id=$1 RETURNING *", [params.data.id]);
-  if (!result.rows[0]) { res.status(404).json({ error: "Voting round not found" }); return; }
-  const round = result.rows[0];
-  res.json({ id: round.id, name: round.name, status: round.status, pnmIds: round.pnm_ids, deadline: round.deadline?.toISOString?.() ?? null, openedAt: new Date(round.opened_at).toISOString(), closedAt: new Date(round.closed_at).toISOString(), voteCount: 0 });
+  const result = await withTransaction(async (client) => {
+    await client.query("SELECT pg_advisory_xact_lock($1)", [params.data.id]);
+    const roundResult = await client.query(
+      "SELECT * FROM pgn_voting_rounds WHERE id = $1 FOR UPDATE",
+      [params.data.id],
+    );
+    const round = roundResult.rows[0];
+    if (!round) return { notFound: true as const };
+    if (round.status !== "open") return { closed: true as const };
+    if (round.voting_mode !== "binary") return { legacy: true as const };
+
+    const electorate = await client.query(
+      "SELECT id, name FROM pgn_users WHERE status='active' AND role IN ('member','admin','super_admin')",
+    );
+    const electorateCount = electorate.rows.length;
+    const candidates = await client.query(
+      `SELECT p.id AS pnm_id, p.first_name || ' ' || p.last_name AS pnm_name,
+         COUNT(u.id)::int AS vote_count,
+         COUNT(u.id) FILTER (WHERE v.score = 1)::int AS yes_count,
+         COUNT(u.id) FILTER (WHERE v.score = 0)::int AS no_count
+       FROM pgn_pnms p
+       LEFT JOIN pgn_votes v ON v.pnm_id = p.id AND v.round_id = $1
+       LEFT JOIN pgn_users u ON u.id = v.voter_id
+         AND u.status='active' AND u.role IN ('member','admin','super_admin')
+       WHERE p.id = ANY($2::int[]) GROUP BY p.id ORDER BY p.last_name`,
+      [round.id, round.pnm_ids],
+    );
+    const votes = await client.query(
+      `SELECT v.pnm_id, v.score, u.id AS voter_id, u.name AS member_name, v.created_at
+       FROM pgn_votes v
+       JOIN pgn_users u ON u.id = v.voter_id
+         AND u.status='active' AND u.role IN ('member','admin','super_admin')
+       WHERE v.round_id = $1 ORDER BY v.created_at`,
+      [round.id],
+    );
+    const votesByPnm = new Map<number, BinaryVoteSnapshot[]>();
+    for (const vote of votes.rows) {
+      const pnmVotes = votesByPnm.get(Number(vote.pnm_id)) ?? [];
+      pnmVotes.push({
+        choice: voteChoice(vote.score) ?? "no",
+        voterId: Number(vote.voter_id),
+        memberName: String(vote.member_name),
+        createdAt: new Date(vote.created_at as string | Date).toISOString(),
+      });
+      votesByPnm.set(Number(vote.pnm_id), pnmVotes);
+    }
+    const snapshot: BinaryRoundSnapshot = {
+      voteCount: votes.rows.length,
+      electorateCount,
+      results: candidates.rows.map((candidate) => {
+        const voteCount = Number(candidate.vote_count ?? 0);
+        const yesCount = Number(candidate.yes_count ?? 0);
+        const noCount = Number(candidate.no_count ?? 0);
+        return {
+          pnmId: Number(candidate.pnm_id),
+          pnmName: String(candidate.pnm_name),
+          voteCount,
+          yesCount,
+          noCount,
+          notVotedCount: Math.max(electorateCount - voteCount, 0),
+          electorateCount,
+          yesPercentage: percentage(yesCount, electorateCount),
+          noPercentage: percentage(noCount, electorateCount),
+          notVotedPercentage: percentage(Math.max(electorateCount - voteCount, 0), electorateCount),
+          votes: votesByPnm.get(Number(candidate.pnm_id)) ?? [],
+        };
+      }),
+    };
+    const closed = await client.query(
+      `UPDATE pgn_voting_rounds
+       SET status='closed', closed_at=NOW(), electorate_count=$2, results_snapshot=$3::jsonb
+       WHERE id=$1 AND status='open' RETURNING *`,
+      [round.id, electorateCount, JSON.stringify(snapshot)],
+    );
+    return { round: closed.rows[0] ?? { ...round, status: "closed", electorate_count: electorateCount, results_snapshot: snapshot }, snapshot };
+  });
+  if ("notFound" in result) { res.status(404).json({ error: "Voting round not found" }); return; }
+  if ("closed" in result) { res.status(409).json({ error: "This voting round is already closed" }); return; }
+  if ("legacy" in result) { res.status(409).json({ error: "Legacy rounds must be migrated before they can close" }); return; }
+  res.json(votingRoundView(result.round, result.snapshot.voteCount, result.snapshot.electorateCount));
 });
 
 router.post("/voting/rounds/:id/votes", async (req: AuthedRequest, res): Promise<void> => {
   const params = CastVoteParams.safeParse(req.params);
   const parsed = CastVoteBody.safeParse(req.body);
-  if (!params.success || !parsed.success) { res.status(400).json({ error: "Vote must be between 1 and 5" }); return; }
-  const round = await activePool.query("SELECT * FROM pgn_voting_rounds WHERE id=$1", [params.data.id]);
-  if (!round.rows[0] || round.rows[0].status !== "open") { res.status(409).json({ error: "This voting round is closed" }); return; }
-  if (!(round.rows[0].pnm_ids as number[]).includes(parsed.data.pnmId)) { res.status(400).json({ error: "PNM is not part of this round" }); return; }
-  await activePool.query(
-    `INSERT INTO pgn_votes (round_id,pnm_id,voter_id,score) VALUES ($1,$2,$3,$4)
-     ON CONFLICT (round_id,pnm_id,voter_id) DO UPDATE SET score=EXCLUDED.score, created_at=NOW()`,
-    [params.data.id, parsed.data.pnmId, req.member!.id, parsed.data.score],
-  );
-  res.status(201).json({ roundId: params.data.id, pnmId: parsed.data.pnmId, score: parsed.data.score, saved: true });
+  if (!params.success || !parsed.success) { res.status(400).json({ error: "Vote must be Yes or No" }); return; }
+  const result = await withTransaction(async (client) => {
+    await client.query("SELECT pg_advisory_xact_lock($1)", [params.data.id]);
+    const roundResult = await client.query(
+      `SELECT *, (deadline IS NOT NULL AND deadline <= NOW()) AS deadline_passed
+       FROM pgn_voting_rounds WHERE id=$1 FOR UPDATE`,
+      [params.data.id],
+    );
+    const round = roundResult.rows[0];
+    if (!round || round.status !== "open" || round.voting_mode !== "binary") return { closed: true as const };
+    if (round.deadline_passed) return { expired: true as const };
+    if (!(round.pnm_ids as number[]).includes(parsed.data.pnmId)) return { invalidPnm: true as const };
+    const voter = await client.query(
+      "SELECT id FROM pgn_users WHERE id=$1 AND status='active' AND role IN ('member','admin','super_admin') FOR SHARE",
+      [req.member!.id],
+    );
+    if (!voter.rows[0]) return { inactive: true as const };
+    await client.query(
+      `INSERT INTO pgn_votes (round_id,pnm_id,voter_id,score) VALUES ($1,$2,$3,$4)
+       ON CONFLICT (round_id,pnm_id,voter_id) DO UPDATE SET score=EXCLUDED.score, created_at=NOW()`,
+      [params.data.id, parsed.data.pnmId, req.member!.id, parsed.data.choice === "yes" ? 1 : 0],
+    );
+    return { saved: true as const };
+  });
+  if ("closed" in result) { res.status(409).json({ error: "This voting round is closed" }); return; }
+  if ("expired" in result) { res.status(409).json({ error: "This voting round deadline has passed" }); return; }
+  if ("invalidPnm" in result) { res.status(400).json({ error: "PNM is not part of this round" }); return; }
+  if ("inactive" in result) { res.status(403).json({ error: "Only active chapter members can vote" }); return; }
+  res.status(201).json({ roundId: params.data.id, pnmId: parsed.data.pnmId, choice: parsed.data.choice, saved: true });
 });
 
 router.get("/approvals", requireRole("super_admin", "admin"), async (_req, res): Promise<void> => {

@@ -6,11 +6,13 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { VotingRoundStatus } from './votingRoundStatus';
+import type { VotingRoundVotingMode } from './votingRoundVotingMode';
 
 export interface VotingRound {
   id: number;
   name: string;
   status: VotingRoundStatus;
+  votingMode: VotingRoundVotingMode;
   pnmIds: number[];
   /** @nullable */
   deadline?: Date | null;
@@ -18,4 +20,6 @@ export interface VotingRound {
   /** @nullable */
   closedAt?: Date | null;
   voteCount: number;
+  /** @nullable */
+  electorateCount?: number | null;
 }

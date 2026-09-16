@@ -44,6 +44,12 @@ export const votingRoundsTable = pgTable("pgn_voting_rounds", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
   status: text("status").notNull().default("open"),
+  // Existing closed rounds with a null mode are the historical 1–5 rounds.
+  // New rounds always set this to binary; open legacy rounds are reset by the
+  // versioned recruitment migration before the API starts.
+  votingMode: text("voting_mode"),
+  electorateCount: integer("electorate_count"),
+  resultsSnapshot: jsonb("results_snapshot"),
   pnmIds: integer("pnm_ids").array().notNull(),
   deadline: timestamp("deadline", { withTimezone: true }),
   openedAt: timestamp("opened_at", { withTimezone: true }).notNull().defaultNow(),

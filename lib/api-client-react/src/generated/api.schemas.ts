@@ -80,10 +80,19 @@ export const VotingRoundStatus = {
   closed: 'closed',
 } as const;
 
+export type VotingRoundVotingMode = typeof VotingRoundVotingMode[keyof typeof VotingRoundVotingMode];
+
+
+export const VotingRoundVotingMode = {
+  binary: 'binary',
+  numeric: 'numeric',
+} as const;
+
 export interface VotingRound {
   id: number;
   name: string;
   status: VotingRoundStatus;
+  votingMode: VotingRoundVotingMode;
   pnmIds: number[];
   /** @nullable */
   deadline?: string | null;
@@ -91,6 +100,8 @@ export interface VotingRound {
   /** @nullable */
   closedAt?: string | null;
   voteCount: number;
+  /** @nullable */
+  electorateCount?: number | null;
 }
 
 export interface Dashboard {
@@ -212,12 +223,32 @@ export interface VotingRoundInput {
   deadline?: string | null;
 }
 
+/**
+ * @nullable
+ */
+export type VoteResultMyChoice = typeof VoteResultMyChoice[keyof typeof VoteResultMyChoice] | null;
+
+
+export const VoteResultMyChoice = {
+  yes: 'yes',
+  no: 'no',
+} as const;
+
+export type AdminVoteChoice = typeof AdminVoteChoice[keyof typeof AdminVoteChoice];
+
+
+export const AdminVoteChoice = {
+  yes: 'yes',
+  no: 'no',
+} as const;
+
 export interface AdminVote {
+  choice?: AdminVoteChoice;
   /**
      * @minimum 1
      * @maximum 5
      */
-  score: number;
+  score?: number;
   memberName: string;
   createdAt: string;
 }
@@ -226,8 +257,17 @@ export interface VoteResult {
   pnmId: number;
   pnmName: string;
   /** @nullable */
-  average: number | null;
+  average?: number | null;
   voteCount: number;
+  yesCount?: number;
+  noCount?: number;
+  notVotedCount?: number;
+  electorateCount?: number;
+  yesPercentage?: number;
+  noPercentage?: number;
+  notVotedPercentage?: number;
+  /** @nullable */
+  myChoice?: VoteResultMyChoice;
   votes?: AdminVote[];
 }
 
@@ -235,19 +275,31 @@ export type VotingRoundDetail = VotingRound & {
   results?: VoteResult[];
 };
 
+export type VoteInputChoice = typeof VoteInputChoice[keyof typeof VoteInputChoice];
+
+
+export const VoteInputChoice = {
+  yes: 'yes',
+  no: 'no',
+} as const;
+
 export interface VoteInput {
   pnmId: number;
-  /**
-     * @minimum 1
-     * @maximum 5
-     */
-  score: number;
+  choice: VoteInputChoice;
 }
+
+export type VoteReceiptChoice = typeof VoteReceiptChoice[keyof typeof VoteReceiptChoice];
+
+
+export const VoteReceiptChoice = {
+  yes: 'yes',
+  no: 'no',
+} as const;
 
 export interface VoteReceipt {
   roundId: number;
   pnmId: number;
-  score: number;
+  choice: VoteReceiptChoice;
   saved: boolean;
 }
 
@@ -329,3 +381,4 @@ export type ListActivityParams = {
  */
 limit?: number;
 };
+

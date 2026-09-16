@@ -5,13 +5,15 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { AdminVoteChoice } from './adminVoteChoice';
 
 export interface AdminVote {
+  choice?: AdminVoteChoice;
   /**
      * @minimum 1
      * @maximum 5
      */
-  score: number;
+  score?: number;
   memberName: string;
   createdAt: Date;
 }

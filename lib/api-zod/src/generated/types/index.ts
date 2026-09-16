@@ -8,6 +8,7 @@
 
 export * from './activityLog';
 export * from './adminVote';
+export * from './adminVoteChoice';
 export * from './archivedParameter';
 export * from './cSVImportInput';
 export * from './cSVImportResult';
@@ -40,10 +41,14 @@ export * from './sortParameter';
 export * from './uploadInput';
 export * from './uploadResponse';
 export * from './voteInput';
+export * from './voteInputChoice';
 export * from './voteReceipt';
+export * from './voteReceiptChoice';
 export * from './voteResult';
+export * from './voteResultMyChoice';
 export * from './votingRound';
 export * from './votingRoundDetail';
 export * from './votingRoundInput';
 export * from './votingRoundStatus';
+export * from './votingRoundVotingMode';
 export * from './yearParameter';

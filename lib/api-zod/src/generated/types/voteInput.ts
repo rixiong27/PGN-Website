@@ -5,12 +5,9 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { VoteInputChoice } from './voteInputChoice';
 
 export interface VoteInput {
   pnmId: number;
-  /**
-     * @minimum 1
-     * @maximum 5
-     */
-  score: number;
+  choice: VoteInputChoice;
 }

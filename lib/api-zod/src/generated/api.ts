@@ -35,6 +35,7 @@ export const GetMeResponse = zod.object({
  */
 
 
+
 export const ValidateInviteBody = zod.object({
   "code": zod.string().min(1)
 })
@@ -48,6 +49,7 @@ export const ValidateInviteResponse = zod.object({
 /**
  * @summary Join the chapter with an invite code
  */
+
 
 
 export const JoinChapterBody = zod.object({
@@ -79,11 +81,13 @@ export const GetDashboardResponse = zod.object({
   "id": zod.number().int(),
   "name": zod.string(),
   "status": zod.enum(['open', 'closed']),
+  "votingMode": zod.enum(['binary', 'numeric']),
   "pnmIds": zod.array(zod.number().int()),
   "deadline": zod.coerce.date().nullish(),
   "openedAt": zod.coerce.date(),
   "closedAt": zod.coerce.date().nullish(),
-  "voteCount": zod.number().int()
+  "voteCount": zod.number().int(),
+  "electorateCount": zod.number().int().nullish()
 })),
   "outstandingVotes": zod.number().int()
 })
@@ -105,6 +109,7 @@ export const ListPnmsQueryParams = zod.object({
 
 export const listPnmsResponseGpaMin = 0;
 export const listPnmsResponseGpaMax = 4;
+
 
 
 export const ListPnmsResponseItem = zod.object({
@@ -138,6 +143,7 @@ export const createPnmBodyGpaMin = 0;
 export const createPnmBodyGpaMax = 4;
 
 
+
 export const CreatePnmBody = zod.object({
   "firstName": zod.string().min(1),
   "lastName": zod.string().min(1),
@@ -154,6 +160,7 @@ export const CreatePnmBody = zod.object({
 
 export const createPnmResponseGpaMin = 0;
 export const createPnmResponseGpaMax = 4;
+
 
 
 export const CreatePnmResponse = zod.object({
@@ -182,6 +189,7 @@ export const CreatePnmResponse = zod.object({
  */
 
 
+
 export const ImportPnmsBody = zod.object({
   "csv": zod.string().min(1),
   "semester": zod.string().nullish()
@@ -205,6 +213,7 @@ export const GetPnmParams = zod.object({
 
 export const getPnmResponseGpaMin = 0;
 export const getPnmResponseGpaMax = 4;
+
 
 
 export const GetPnmResponse = zod.object({
@@ -236,8 +245,10 @@ export const UpdatePnmParams = zod.object({
 })
 
 
+
 export const updatePnmBodyOneGpaMin = 0;
 export const updatePnmBodyOneGpaMax = 4;
+
 
 
 export const UpdatePnmBody = zod.object({
@@ -259,6 +270,7 @@ export const UpdatePnmBody = zod.object({
 
 export const updatePnmResponseGpaMin = 0;
 export const updatePnmResponseGpaMax = 4;
+
 
 
 export const UpdatePnmResponse = zod.object({
@@ -318,6 +330,8 @@ export const CreateNoteParams = zod.object({
 })
 
 
+
+
 export const CreateNoteBody = zod.object({
   "content": zod.string().min(1)
 })
@@ -360,11 +374,13 @@ export const ListVotingRoundsResponseItem = zod.object({
   "id": zod.number().int(),
   "name": zod.string(),
   "status": zod.enum(['open', 'closed']),
+  "votingMode": zod.enum(['binary', 'numeric']),
   "pnmIds": zod.array(zod.number().int()),
   "deadline": zod.coerce.date().nullish(),
   "openedAt": zod.coerce.date(),
   "closedAt": zod.coerce.date().nullish(),
-  "voteCount": zod.number().int()
+  "voteCount": zod.number().int(),
+  "electorateCount": zod.number().int().nullish()
 })
 export const ListVotingRoundsResponse = zod.array(ListVotingRoundsResponseItem)
 
@@ -372,6 +388,8 @@ export const ListVotingRoundsResponse = zod.array(ListVotingRoundsResponseItem)
 /**
  * @summary Open a voting round for PNMs
  */
+
+
 
 
 export const CreateVotingRoundBody = zod.object({
@@ -384,11 +402,13 @@ export const CreateVotingRoundResponse = zod.object({
   "id": zod.number().int(),
   "name": zod.string(),
   "status": zod.enum(['open', 'closed']),
+  "votingMode": zod.enum(['binary', 'numeric']),
   "pnmIds": zod.array(zod.number().int()),
   "deadline": zod.coerce.date().nullish(),
   "openedAt": zod.coerce.date(),
   "closedAt": zod.coerce.date().nullish(),
-  "voteCount": zod.number().int()
+  "voteCount": zod.number().int(),
+  "electorateCount": zod.number().int().nullish()
 })
 
 
@@ -402,23 +422,35 @@ export const GetVotingRoundParams = zod.object({
 export const getVotingRoundResponseTwoResultsItemVotesItemScoreMax = 5;
 
 
+
 export const GetVotingRoundResponse = zod.object({
   "id": zod.number().int(),
   "name": zod.string(),
   "status": zod.enum(['open', 'closed']),
+  "votingMode": zod.enum(['binary', 'numeric']),
   "pnmIds": zod.array(zod.number().int()),
   "deadline": zod.coerce.date().nullish(),
   "openedAt": zod.coerce.date(),
   "closedAt": zod.coerce.date().nullish(),
-  "voteCount": zod.number().int()
+  "voteCount": zod.number().int(),
+  "electorateCount": zod.number().int().nullish()
 }).and(zod.object({
   "results": zod.array(zod.object({
   "pnmId": zod.number().int(),
   "pnmName": zod.string(),
-  "average": zod.number().nullable(),
+  "average": zod.number().nullish(),
   "voteCount": zod.number().int(),
+  "yesCount": zod.number().int().optional(),
+  "noCount": zod.number().int().optional(),
+  "notVotedCount": zod.number().int().optional(),
+  "electorateCount": zod.number().int().optional(),
+  "yesPercentage": zod.number().optional(),
+  "noPercentage": zod.number().optional(),
+  "notVotedPercentage": zod.number().optional(),
+  "myChoice": zod.union([zod.literal('yes'),zod.literal('no'),zod.literal(null)]).nullish(),
   "votes": zod.array(zod.object({
-  "score": zod.number().int().min(1).max(getVotingRoundResponseTwoResultsItemVotesItemScoreMax),
+  "choice": zod.enum(['yes', 'no']).optional(),
+  "score": zod.number().int().min(1).max(getVotingRoundResponseTwoResultsItemVotesItemScoreMax).optional(),
   "memberName": zod.string(),
   "createdAt": zod.coerce.date()
 })).optional()
@@ -437,11 +469,13 @@ export const CloseVotingRoundResponse = zod.object({
   "id": zod.number().int(),
   "name": zod.string(),
   "status": zod.enum(['open', 'closed']),
+  "votingMode": zod.enum(['binary', 'numeric']),
   "pnmIds": zod.array(zod.number().int()),
   "deadline": zod.coerce.date().nullish(),
   "openedAt": zod.coerce.date(),
   "closedAt": zod.coerce.date().nullish(),
-  "voteCount": zod.number().int()
+  "voteCount": zod.number().int(),
+  "electorateCount": zod.number().int().nullish()
 })
 
 
@@ -452,18 +486,15 @@ export const CastVoteParams = zod.object({
   "id": zod.coerce.number().int()
 })
 
-export const castVoteBodyScoreMax = 5;
-
-
 export const CastVoteBody = zod.object({
   "pnmId": zod.number().int(),
-  "score": zod.number().int().min(1).max(castVoteBodyScoreMax)
+  "choice": zod.enum(['yes', 'no'])
 })
 
 export const CastVoteResponse = zod.object({
   "roundId": zod.number().int(),
   "pnmId": zod.number().int(),
-  "score": zod.number().int(),
+  "choice": zod.enum(['yes', 'no']),
   "saved": zod.boolean()
 })
 
@@ -527,6 +558,7 @@ export const ListUsersResponse = zod.array(ListUsersResponseItem)
  */
 
 
+
 export const CreateUserBody = zod.object({
   "name": zod.string().min(1),
   "email": zod.string().email()
@@ -570,6 +602,7 @@ export const listActivityQueryLimitDefault = 50;
 export const listActivityQueryLimitMax = 100;
 
 
+
 export const ListActivityQueryParams = zod.object({
   "limit": zod.coerce.number().int().min(1).max(listActivityQueryLimitMax).default(listActivityQueryLimitDefault)
 })
@@ -589,6 +622,7 @@ export const ListActivityResponse = zod.array(ListActivityResponseItem)
  */
 
 
+
 export const RequestUploadUrlBody = zod.object({
   "name": zod.string(),
   "size": zod.number().int().min(1),
@@ -599,3 +633,5 @@ export const RequestUploadUrlResponse = zod.object({
   "uploadURL": zod.string().url(),
   "objectPath": zod.string()
 })
+
+
