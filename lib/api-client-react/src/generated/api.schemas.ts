@@ -329,4 +329,3 @@ export type ListActivityParams = {
  */
 limit?: number;
 };
-
