@@ -20,6 +20,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
+  Upload,
   Users,
   UserRound,
   X,
@@ -56,6 +57,7 @@ import {
   useListUsers,
   useListVotingRounds,
   useRejectMember,
+  useRequestUploadUrl,
   useToggleNotePin,
   useUpdatePnm,
   useUpdateUserRole,
@@ -165,6 +167,13 @@ const navGroups = [
 
 function initials(name = '') {
   return name.split(' ').filter(Boolean).slice(0, 2).map((part) => part[0]).join('').toUpperCase() || 'PG';
+}
+
+function PnmPhoto({ photoPath, name, className = 'avatar avatar-lg' }: { photoPath?: string | null; name: string; className?: string }) {
+  const [imageFailed, setImageFailed] = useState(false);
+  useEffect(() => setImageFailed(false), [photoPath]);
+  if (!photoPath || imageFailed) return <div className={className}>{initials(name)}</div>;
+  return <div className={`${className} photo-frame`}><img src={`${basePath}/api/storage${photoPath}`} alt={`${name} profile`} onError={() => setImageFailed(true)} /></div>;
 }
 
 function formatDate(value?: string | null) {
@@ -464,22 +473,66 @@ function Profile() {
   const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
   const toast = useToastLite();
+  const { data: currentUser } = useGetMe();
   const { data: pnm, isLoading, isError, refetch } = useGetPnm(pnmId, { query: { queryKey: getGetPnmQueryKey(pnmId), enabled: Number.isFinite(pnmId) } });
   const { data: notes, isLoading: notesLoading } = useListNotes(pnmId, { query: { queryKey: getListNotesQueryKey(pnmId), enabled: Number.isFinite(pnmId) } });
   const update = useUpdatePnm();
+  const requestPhotoUpload = useRequestUploadUrl();
   const remove = useDeletePnm();
   const createNote = useCreateNote();
   const togglePin = useToggleNotePin();
+  const [photoUploading, setPhotoUploading] = useState(false);
+  const [photoUploadError, setPhotoUploadError] = useState('');
   const [editing, setEditing] = useState(false);
   const [noteText, setNoteText] = useState('');
   const [form, setForm] = useState<Partial<Pnm>>({});
-  useEffect(() => { if (pnm && !editing) setForm({ firstName: pnm.firstName, lastName: pnm.lastName, pronouns: pnm.pronouns, email: pnm.email, year: pnm.year, major: pnm.major, minor: pnm.minor, gpa: pnm.gpa, status: pnm.status, semester: pnm.semester }); }, [pnm, editing]);
+  const isAdmin = currentUser?.role === 'admin' || currentUser?.role === 'super_admin';
+  useEffect(() => { if (pnm && !editing) setForm({ firstName: pnm.firstName, lastName: pnm.lastName, pronouns: pnm.pronouns, email: pnm.email, year: pnm.year, major: pnm.major, minor: pnm.minor, gpa: pnm.gpa, photoPath: pnm.photoPath, status: pnm.status, semester: pnm.semester }); }, [pnm, editing]);
   if (isLoading) return <><PageHeader eyebrow="Workspace / Profile" title="PNM profile" /><LoadingBlock rows={6} /></>;
   if (isError || !pnm) return <><PageHeader eyebrow="Workspace / Profile" title="PNM profile" /><ErrorState message="This PNM may have been removed or is unavailable." onRetry={() => refetch()} /></>;
   const save = () => update.mutate({ id: pnmId, data: { ...form, firstName: form.firstName || pnm.firstName, lastName: form.lastName || pnm.lastName } }, { onSuccess: () => { setEditing(false); void queryClient.invalidateQueries({ queryKey: getGetPnmQueryKey(pnmId) }); void queryClient.invalidateQueries({ queryKey: getListPnmsQueryKey() }); toast.show('PNM profile updated.'); } });
+  const uploadPhoto = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    setPhotoUploadError('');
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+      setPhotoUploadError('Choose a JPG, PNG, or WebP image.');
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setPhotoUploadError('Choose an image no larger than 5 MB.');
+      return;
+    }
+    setPhotoUploading(true);
+    try {
+      const { uploadURL, objectPath } = await requestPhotoUpload.mutateAsync({
+        data: { name: file.name, size: file.size, contentType: file.type },
+      });
+      const response = await fetch(uploadURL, {
+        method: 'PUT',
+        headers: { 'Content-Type': file.type },
+        body: file,
+      });
+      if (!response.ok) throw new Error('The image could not be uploaded.');
+      await update.mutateAsync({
+        id: pnmId,
+        data: { ...form, firstName: form.firstName || pnm.firstName, lastName: form.lastName || pnm.lastName, photoPath: objectPath },
+      });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: getGetPnmQueryKey(pnmId) }),
+        queryClient.invalidateQueries({ queryKey: getListPnmsQueryKey() }),
+      ]);
+      toast.show(pnm.photoPath ? 'PNM photo replaced.' : 'PNM photo added.');
+    } catch {
+      setPhotoUploadError('The photo could not be saved. Check your connection and try again.');
+    } finally {
+      setPhotoUploading(false);
+    }
+  };
   const addNote = (event: React.FormEvent) => { event.preventDefault(); if (!noteText.trim()) return; createNote.mutate({ id: pnmId, data: { content: noteText.trim() } }, { onSuccess: () => { setNoteText(''); void queryClient.invalidateQueries({ queryKey: getListNotesQueryKey(pnmId) }); toast.show('Note added to the record.'); } }); };
   const removePnm = () => { if (!window.confirm(`Remove ${pnm.firstName} ${pnm.lastName} from the workspace?`)) return; remove.mutate({ id: pnmId }, { onSuccess: () => { void queryClient.invalidateQueries({ queryKey: getListPnmsQueryKey() }); setLocation('/roster'); toast.show('PNM removed.'); } }); };
-  return <><PageHeader eyebrow="Workspace / PNM profile" title={`${pnm.firstName} ${pnm.lastName}`} subtitle={`Added ${formatDate(pnm.createdAt)} · Last updated ${formatRelative(pnm.updatedAt)}`} action={<Link href="/roster" className="btn btn-secondary" data-testid="button-back-roster"><ArrowLeft size={14} /> Back to roster</Link>} /><div className="card profile-banner"><div className="profile-info"><div className="avatar avatar-lg">{initials(`${pnm.firstName} ${pnm.lastName}`)}</div><div><div className="profile-name">{pnm.firstName} {pnm.lastName}</div><div className="profile-meta">{pnm.pronouns ?? 'Pronouns not recorded'} · {pnm.email ?? 'No email recorded'}</div><div style={{ marginTop: 10 }}><StatusBadge value={pnm.status} /></div></div></div><div className="row-actions">{editing ? <><button className="btn btn-primary" onClick={save} disabled={update.isPending} data-testid="button-save-profile">{update.isPending ? 'Saving…' : 'Save changes'}</button><button className="btn btn-ghost" onClick={() => setEditing(false)} data-testid="button-cancel-profile">Cancel</button></> : <><button className="btn btn-secondary" onClick={() => setEditing(true)} data-testid="button-edit-profile"><FileText size={14} /> Edit details</button><button className="btn btn-danger" onClick={removePnm} disabled={remove.isPending} data-testid="button-delete-pnm"><Archive size={14} /> Remove</button></>}</div></div><div className="profile-grid" style={{ marginTop: 16 }}><div className="card section-card"><div className="section-head"><div className="section-title">Candidate details</div>{editing ? <span className="eyebrow">Editing</span> : null}</div>{editing ? <div className="detail-grid">{[['firstName','First name'],['lastName','Last name'],['email','Email'],['pronouns','Pronouns'],['year','Year'],['major','Major'],['minor','Minor'],['gpa','GPA'],['semester','Semester']].map(([key, label]) => <div className="field" key={key}><label className="field-label" htmlFor={`edit-${key}`}>{label}</label><input id={`edit-${key}`} className="input" value={String(form[key as keyof typeof form] ?? '')} onChange={(e) => setForm({ ...form, [key]: key === 'gpa' ? (e.target.value ? Number(e.target.value) : null) : e.target.value })} data-testid={`input-edit-${key}`} /></div>)}<div className="field"><label className="field-label" htmlFor="edit-status">Pipeline state</label><select id="edit-status" className="select" value={String(form.status ?? pnm.status)} onChange={(e) => setForm({ ...form, status: e.target.value as PipelineStatus })} data-testid="select-edit-status">{Object.entries(pipelineLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div></div> : <div className="detail-grid">{[['Year', pnm.year],['Major', pnm.major],['Minor', pnm.minor],['GPA', pnm.gpa?.toFixed(2)],['Semester', pnm.semester],['Email', pnm.email]].map(([label, value]) => <div key={label}><div className="field-label">{label}</div><div className="detail-value">{value || 'Not recorded'}</div></div>)}</div>}<div style={{ borderTop: '1px solid hsl(var(--border))', marginTop: 23, paddingTop: 17 }}><div className="field-label">Voting summary</div><div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 8 }}><span style={{ font: '500 25px var(--app-font-mono)', color: 'hsl(var(--primary))' }}>{pnm.averageVote?.toFixed(1) ?? '—'}</span><span className="page-subtitle">average from {pnm.voteCount} chapter votes</span></div></div></div><div className="card section-card"><div className="section-head"><div><div className="section-title">Chapter context</div><div className="page-subtitle" style={{ fontSize: 12, marginTop: 3 }}>Notes are visible to active members</div></div><Pin size={15} color="hsl(var(--primary))" /></div><form onSubmit={addNote} style={{ display: 'flex', gap: 8, alignItems: 'flex-end', marginBottom: 12 }}><textarea className="textarea" value={noteText} onChange={(e) => setNoteText(e.target.value)} placeholder="Record something useful for the next conversation…" style={{ minHeight: 68 }} data-testid="textarea-new-note" /><button className="btn btn-primary" type="submit" disabled={createNote.isPending || !noteText.trim()} data-testid="button-add-note"><Plus size={14} /></button></form>{notesLoading ? <LoadingBlock rows={3} /> : notes?.length ? notes.map((note) => <div className="note" key={note.id} data-testid={`note-${note.id}`}><div className="note-top"><div><span className="note-author">{note.authorName}</span>{note.pinned ? <span className="status status-pending" style={{ marginLeft: 7 }}><Pin size={10} /> Pinned</span> : null}</div><div style={{ display: 'flex', gap: 9, alignItems: 'center' }}><span className="note-date">{formatRelative(note.createdAt)}</span><button className="btn btn-ghost btn-sm" onClick={() => togglePin.mutate({ id: note.id, data: { pinned: !note.pinned } }, { onSuccess: () => void queryClient.invalidateQueries({ queryKey: getListNotesQueryKey(pnmId) }) })} data-testid={`button-pin-note-${note.id}`}><Pin size={13} /></button></div></div><div className="note-copy">{note.content}</div></div>) : <EmptyState title="No notes yet" copy="Be the first member to add useful context." icon={BookOpen} />}</div></div><Toast message={toast.message} /></>;
+  return <><PageHeader eyebrow="Workspace / PNM profile" title={`${pnm.firstName} ${pnm.lastName}`} subtitle={`Added ${formatDate(pnm.createdAt)} · Last updated ${formatRelative(pnm.updatedAt)}`} action={<Link href="/roster" className="btn btn-secondary" data-testid="button-back-roster"><ArrowLeft size={14} /> Back to roster</Link>} /><div className="card profile-banner"><div className="profile-info"><PnmPhoto photoPath={pnm.photoPath} name={`${pnm.firstName} ${pnm.lastName}`} /><div><div className="profile-name">{pnm.firstName} {pnm.lastName}</div><div className="profile-meta">{pnm.pronouns ?? 'Pronouns not recorded'} · {pnm.email ?? 'No email recorded'}</div><div style={{ marginTop: 10 }}><StatusBadge value={pnm.status} /></div></div></div>{isAdmin ? <div className="photo-control"><label className="btn btn-secondary btn-sm" htmlFor="pnm-photo-upload"><Upload size={13} />{photoUploading ? 'Uploading…' : pnm.photoPath ? 'Replace photo' : 'Add photo'}</label><input id="pnm-photo-upload" type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={uploadPhoto} disabled={photoUploading} data-testid="input-pnm-photo" /><div className="photo-hint">JPG, PNG, or WebP · 5 MB max</div>{photoUploadError ? <div className="photo-error" role="alert">{photoUploadError}</div> : null}</div> : null}<div className="row-actions">{editing && isAdmin ? <><button className="btn btn-primary" onClick={save} disabled={update.isPending} data-testid="button-save-profile">{update.isPending ? 'Saving…' : 'Save changes'}</button><button className="btn btn-ghost" onClick={() => setEditing(false)} data-testid="button-cancel-profile">Cancel</button></> : !editing && isAdmin ? <><button className="btn btn-secondary" onClick={() => setEditing(true)} data-testid="button-edit-profile"><FileText size={14} /> Edit details</button><button className="btn btn-danger" onClick={removePnm} disabled={remove.isPending} data-testid="button-delete-pnm"><Archive size={14} /> Remove</button></> : null}</div></div><div className="profile-grid" style={{ marginTop: 16 }}><div className="card section-card"><div className="section-head"><div className="section-title">Candidate details</div>{editing && isAdmin ? <span className="eyebrow">Editing</span> : null}</div>{editing && isAdmin ? <div className="detail-grid">{[['firstName','First name'],['lastName','Last name'],['email','Email'],['pronouns','Pronouns'],['year','Year'],['major','Major'],['minor','Minor'],['gpa','GPA'],['semester','Semester']].map(([key, label]) => <div className="field" key={key}><label className="field-label" htmlFor={`edit-${key}`}>{label}</label><input id={`edit-${key}`} className="input" value={String(form[key as keyof typeof form] ?? '')} onChange={(e) => setForm({ ...form, [key]: key === 'gpa' ? (e.target.value ? Number(e.target.value) : null) : e.target.value })} data-testid={`input-edit-${key}`} /></div>)}<div className="field"><label className="field-label" htmlFor="edit-status">Pipeline state</label><select id="edit-status" className="select" value={String(form.status ?? pnm.status)} onChange={(e) => setForm({ ...form, status: e.target.value as PipelineStatus })} data-testid="select-edit-status">{Object.entries(pipelineLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div></div> : <div className="detail-grid">{[['Year', pnm.year],['Major', pnm.major],['Minor', pnm.minor],['GPA', pnm.gpa?.toFixed(2)],['Semester', pnm.semester],['Email', pnm.email]].map(([label, value]) => <div key={label}><div className="field-label">{label}</div><div className="detail-value">{value || 'Not recorded'}</div></div>)}</div>}<div style={{ borderTop: '1px solid hsl(var(--border))', marginTop: 23, paddingTop: 17 }}><div className="field-label">Voting summary</div><div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 8 }}><span style={{ font: '500 25px var(--app-font-mono)', color: 'hsl(var(--primary))' }}>{pnm.averageVote?.toFixed(1) ?? '—'}</span><span className="page-subtitle">average from {pnm.voteCount} chapter votes</span></div></div></div><div className="card section-card"><div className="section-head"><div><div className="section-title">Chapter context</div><div className="page-subtitle" style={{ fontSize: 12, marginTop: 3 }}>Notes are visible to active members</div></div><Pin size={15} color="hsl(var(--primary))" /></div><form onSubmit={addNote} style={{ display: 'flex', gap: 8, alignItems: 'flex-end', marginBottom: 12 }}><textarea className="textarea" value={noteText} onChange={(e) => setNoteText(e.target.value)} placeholder="Record something useful for the next conversation…" style={{ minHeight: 68 }} data-testid="textarea-new-note" /><button className="btn btn-primary" type="submit" disabled={createNote.isPending || !noteText.trim()} data-testid="button-add-note"><Plus size={14} /></button></form>{notesLoading ? <LoadingBlock rows={3} /> : notes?.length ? notes.map((note) => <div className="note" key={note.id} data-testid={`note-${note.id}`}><div className="note-top"><div><span className="note-author">{note.authorName}</span>{note.pinned ? <span className="status status-pending" style={{ marginLeft: 7 }}><Pin size={10} /> Pinned</span> : null}</div><div style={{ display: 'flex', gap: 9, alignItems: 'center' }}><span className="note-date">{formatRelative(note.createdAt)}</span><button className="btn btn-ghost btn-sm" onClick={() => togglePin.mutate({ id: note.id, data: { pinned: !note.pinned } }, { onSuccess: () => void queryClient.invalidateQueries({ queryKey: getListNotesQueryKey(pnmId) }) })} data-testid={`button-pin-note-${note.id}`}><Pin size={13} /></button></div></div><div className="note-copy">{note.content}</div></div>) : <EmptyState title="No notes yet" copy="Be the first member to add useful context." icon={BookOpen} />}</div></div><Toast message={toast.message} /></>;
 }
 
 function VotingPage() {

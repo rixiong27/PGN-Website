@@ -105,6 +105,8 @@
 .user-chip { display:flex; align-items:center; gap:10px; padding:9px; border-radius:9px; background:hsl(0 0% 17%); }
 .avatar { width:32px; height:32px; border-radius:50%; display:grid; place-items:center; font-size:11px; font-weight:700; color:hsl(var(--primary)); background:hsl(0 73% 90%); flex-shrink:0; }
 .avatar-lg { width:58px; height:58px; font-size:17px; }
+.photo-frame { overflow:hidden; }
+.photo-frame img { width:100%; height:100%; object-fit:cover; display:block; }
 .main-wrap { min-width:0; flex:1; }
 .topbar { height:72px; display:flex; align-items:center; justify-content:space-between; padding:0 38px; border-bottom:1px solid hsl(var(--border)); background:hsl(var(--card)); }
 .topbar-kicker { color:hsl(var(--muted-foreground)); font-size:12px; letter-spacing:.04em; }
@@ -181,6 +183,9 @@
 .profile-info { display:flex; gap:16px; align-items:center; }
 .profile-name { font-size:23px; letter-spacing:-.04em; font-weight:700; }
 .profile-meta { color:hsl(var(--muted-foreground)); font-size:12px; margin-top:5px; }
+.photo-control { display:flex; flex-direction:column; align-items:flex-start; gap:5px; }
+.photo-hint { color:hsl(var(--muted-foreground)); font-size:10px; }
+.photo-error { color:hsl(0 58% 35%); font-size:11px; max-width:190px; line-height:1.35; }
 .detail-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:14px; }
 .detail-value { font-size:13px; margin-top:5px; }
 .note { padding:15px 0; border-bottom:1px solid hsl(var(--border)); }

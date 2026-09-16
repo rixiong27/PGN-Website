@@ -4,9 +4,9 @@ import {
   RequestUploadUrlBody,
   RequestUploadUrlResponse,
 } from '@workspace/api-zod';
+import { pool } from '@workspace/db';
 import { Router, type IRouter, type Request, type Response } from 'express';
 
-import { ObjectPermission } from '../lib/objectAcl';
 import {
   ObjectNotFoundError,
   ObjectStorageService,
@@ -15,10 +15,21 @@ import {
 const router: IRouter = Router();
 const objectStorageService = new ObjectStorageService();
 
-function hasAuthenticatedSession(
-  req: Request,
-): req is Request & { isAuthenticated: () => boolean } {
-  return Boolean(getAuth(req).userId);
+type StorageMember = {
+  role: 'super_admin' | 'admin' | 'member' | 'pending';
+  status: 'active' | 'pending' | 'rejected';
+};
+
+async function getActiveMember(req: Request): Promise<StorageMember | null> {
+  const clerkId = getAuth(req).userId;
+  if (!clerkId) return null;
+
+  const result = await pool.query<StorageMember>(
+    'SELECT role, status FROM pgn_users WHERE clerk_id = $1 LIMIT 1',
+    [clerkId],
+  );
+  const member = result.rows[0];
+  return member?.status === 'active' ? member : null;
 }
 
 /**
@@ -32,9 +43,16 @@ function hasAuthenticatedSession(
 router.post(
   '/storage/uploads/request-url',
   async (req: Request, res: Response) => {
-    if (!hasAuthenticatedSession(req)) {
+    const auth = getAuth(req);
+    if (!auth.userId) {
       res.status(401).json({ error: 'Unauthorized' });
 
+      return;
+    }
+
+    const member = await getActiveMember(req);
+    if (!member || (member.role !== 'admin' && member.role !== 'super_admin')) {
+      res.status(403).json({ error: 'Only chapter admins can upload PNM photos' });
       return;
     }
 
@@ -46,6 +64,13 @@ router.post(
 
     try {
       const { name, size, contentType } = parsed.data;
+      const allowedContentTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
+      if (!allowedContentTypes.has(contentType) || size > 5 * 1024 * 1024) {
+        res.status(400).json({
+          error: 'PNM photos must be JPG, PNG, or WebP images no larger than 5 MB',
+        });
+        return;
+      }
 
       const uploadURL = await objectStorageService.getObjectEntityUploadURL();
       const objectPath =
@@ -115,6 +140,10 @@ router.get('/storage/objects/*path', async (req: Request, res: Response) => {
   try {
     if (!getAuth(req).userId) {
       res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    if (!await getActiveMember(req)) {
+      res.status(403).json({ error: 'Active chapter membership is required' });
       return;
     }
     const raw = req.params.path;
