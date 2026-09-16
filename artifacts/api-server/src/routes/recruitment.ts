@@ -425,7 +425,7 @@ router.get("/voting/rounds/:id", async (req: AuthedRequest, res): Promise<void> 
     }
     return item;
   }));
-  res.json({ id: round.id, name: round.name, status: round.status, pnmIds: round.pnm_ids, deadline: round.deadline?.toISOString?.() ?? null, openedAt: new Date(round.opened_at).toISOString(), closedAt: round.closed_at ? new Date(round.closed_at).toISOString() : null, voteCount: results.rows.reduce((total, row) => total + Number(row.vote_count), 0), results });
+  res.json({ id: round.id, name: round.name, status: round.status, pnmIds: round.pnm_ids, deadline: round.deadline?.toISOString?.() ?? null, openedAt: new Date(round.opened_at).toISOString(), closedAt: round.closed_at ? new Date(round.closed_at).toISOString() : null, voteCount: results.rows.reduce((total, row) => total + Number(row.vote_count), 0), results: detail });
 });
 
 router.post("/voting/rounds/:id/close", requireRole("super_admin", "admin"), async (req, res): Promise<void> => {

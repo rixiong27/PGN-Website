@@ -5,6 +5,6 @@ description: Why this app currently avoids React Fast Refresh during development
 
 Keep development full reloads enabled while most authenticated route components remain in one large module.
 
-**Why:** Fast Refresh retained stale hook signatures after generated-client and authentication edits, causing valid route components to fail at their first hook across multiple pages. Cache clears alone did not prevent recurrence.
+**Why:** Full reloads were chosen as a precaution after cross-page errors, but Fast Refresh was never confirmed as the cause. The reported Voting crash persisted and was traced to an API response-shape mismatch. Do not assume hook warnings or component-stack locations identify the original exception.
 
-**How to apply:** Do not re-enable Fast Refresh unless the route components have been split into stable modules and authenticated navigation has been checked across the main sidebar routes.
+**How to apply:** Preserve the current reload preference unless deliberately reassessed. For crashes, inspect the actual exception and API response shape before blaming caches or hook identities.
