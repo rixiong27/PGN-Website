@@ -186,6 +186,7 @@
 .photo-control { display:flex; flex-direction:column; align-items:flex-start; gap:5px; }
 .photo-hint { color:hsl(var(--muted-foreground)); font-size:10px; }
 .photo-error { color:hsl(0 58% 35%); font-size:11px; max-width:190px; line-height:1.35; }
+.pnm-photo-next-step { grid-column: 1 / -1; padding: 9px 11px; border: 1px solid hsl(var(--primary)/.2); border-radius: 7px; background: hsl(var(--accent)); color: hsl(var(--foreground)); font-size: 12px; line-height: 1.4; }
 .detail-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:14px; }
 .detail-value { font-size:13px; margin-top:5px; }
 .note { padding:15px 0; border-bottom:1px solid hsl(var(--border)); }

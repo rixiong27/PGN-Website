@@ -387,7 +387,17 @@ router.get("/dashboard", async (_req, res): Promise<void> => {
 });
 
 router.get("/pnms", async (req, res): Promise<void> => {
-  const parsed = ListPnmsQueryParams.safeParse(req.query);
+  // HTTP query values are strings; Boolean("false") is true. Normalize before
+  // the generated coercion so active and archived rosters stay distinct.
+  const archived = req.query.archived;
+  if (archived !== undefined && archived !== "true" && archived !== "false") {
+    res.status(400).json({ error: "archived must be true or false" });
+    return;
+  }
+  const parsed = ListPnmsQueryParams.safeParse({
+    ...req.query,
+    archived: archived === "true",
+  });
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
     return;
