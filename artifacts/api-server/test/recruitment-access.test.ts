@@ -38,19 +38,41 @@ function copyMember(member: TestMember): TestMember {
 
 const fakePool = {
   async query<T = Record<string, unknown>>(sql: string, values: unknown[] = []): Promise<{ rows: T[] }> {
+    if (sql === "BEGIN ISOLATION LEVEL SERIALIZABLE" || sql === "COMMIT" || sql === "ROLLBACK" || sql.includes("pg_advisory_xact_lock")) {
+      return { rows: [] as T[] };
+    }
+
+    if (sql === "SELECT * FROM pgn_users WHERE id=$1 FOR UPDATE") {
+      const member = state.users.find((item) => item.id === values[0]);
+      return { rows: (member ? [copyMember(member)] : []) as T[] };
+    }
+
+    if (sql.startsWith("UPDATE pgn_users SET status='rejected' WHERE id=$1 AND role='pending'")) {
+      const member = state.users.find((item) => item.id === values[0] && item.role === "pending" && item.status === "pending");
+      if (!member) return { rows: [] as T[] };
+      member.status = "rejected";
+      return { rows: [copyMember(member)] as T[] };
+    }
+
+    if (sql.startsWith("UPDATE pgn_users SET status='rejected' WHERE id=$1 AND status='active'")) {
+      const member = state.users.find((item) => item.id === values[0] && item.status === "active");
+      if (!member) return { rows: [] as T[] };
+      member.status = "rejected";
+      return { rows: [copyMember(member)] as T[] };
+    }
+
+    if (sql.startsWith("SELECT id, name, email, created_at FROM pgn_users WHERE role='pending'")) {
+      const members = state.users.filter((item) => item.role === "pending" && item.status === "pending");
+      return { rows: members.map((member) => ({ id: member.id, name: member.name, email: member.email, created_at: member.created_at })) as T[] };
+    }
+
     if (sql.includes("FROM pgn_invites")) {
       const invite = state.invites.find((item) => item.code === values[0] && item.active);
       return { rows: (invite ? [{ label: invite.label }] : []) as T[] };
     }
 
-    if (sql === "SELECT * FROM pgn_users WHERE clerk_id = $1") {
+    if (sql.startsWith("SELECT * FROM pgn_users WHERE clerk_id = $1")) {
       const member = state.users.find((item) => item.clerk_id === values[0]);
-      return { rows: (member ? [copyMember(member)] : []) as T[] };
-    }
-
-    if (sql.includes("FROM pgn_users WHERE clerk_id = $1 OR")) {
-      const [clerkId, email] = values as [string, string];
-      const member = state.users.find((item) => item.clerk_id === clerkId || (item.email === email && item.clerk_id.startsWith("preapproved:")));
       return { rows: (member ? [copyMember(member)] : []) as T[] };
     }
 
@@ -67,7 +89,7 @@ const fakePool = {
     }
 
     if (sql.startsWith("SELECT * FROM pgn_users WHERE lower(email)")) {
-      const member = state.users.find((item) => item.email === values[0]);
+      const member = state.users.find((item) => item.email === values[0] && (!sql.includes("status = 'active'") || item.status === "active"));
       return { rows: (member ? [copyMember(member)] : []) as T[] };
     }
 
@@ -93,6 +115,12 @@ const fakePool = {
 
     if (sql.startsWith("INSERT INTO pgn_activity")) return { rows: [] as T[] };
     throw new Error(`Unexpected test query: ${sql}`);
+  },
+  async connect() {
+    return {
+      query: fakePool.query.bind(fakePool),
+      release() {},
+    };
   },
 };
 
@@ -393,6 +421,153 @@ test("gates pending members while leaving their access profile readable", async 
   const dashboard = await request(app, "GET", "/dashboard", undefined, "pending");
   assert.equal(dashboard.status, 403);
   assert.deepEqual(dashboard.body, { error: "Your chapter account is awaiting approval" });
+});
+
+test("declined requests stay out of the approval queue and removed members lose workspace access", async () => {
+  state.users.push(
+    {
+      id: state.nextId++,
+      clerk_id: "clerk-admin",
+      name: "Chapter Admin",
+      email: "admin@vt.edu",
+      role: "admin",
+      status: "active",
+      created_at: new Date("2026-09-16T12:00:00.000Z"),
+    },
+    {
+      id: state.nextId++,
+      clerk_id: "clerk-pending",
+      name: "Declined Request",
+      email: "declined@example.com",
+      role: "pending",
+      status: "rejected",
+      created_at: new Date("2026-09-16T12:00:00.000Z"),
+    },
+    {
+      id: state.nextId++,
+      clerk_id: "clerk-member",
+      name: "Active Member",
+      email: "member@example.com",
+      role: "member",
+      status: "active",
+      created_at: new Date("2026-09-16T12:00:00.000Z"),
+    },
+  );
+  authByUser.admin = { userId: "clerk-admin", sessionClaims: { email: "admin@vt.edu" } };
+  authByUser.member = { userId: "clerk-member", sessionClaims: { email: "member@example.com" } };
+  state.invites.push({ code: "PGN-VALID", label: "Fall 2026", active: true });
+
+  const app = buildApp();
+  const approvals = await request(app, "GET", "/approvals", undefined, "admin");
+  assert.equal(approvals.status, 200);
+  assert.deepEqual(approvals.body, []);
+
+  const remove = await request(app, "DELETE", "/users/3", undefined, "admin");
+  assert.equal(remove.status, 200);
+  assert.equal(state.users.find((member) => member.id === 3)?.status, "rejected");
+
+  const removedProfile = await request(app, "GET", "/me", undefined, "member");
+  assert.equal(removedProfile.status, 403);
+  assert.deepEqual(removedProfile.body, { error: "Your chapter access has been removed" });
+
+  const removedDashboard = await request(app, "GET", "/dashboard", undefined, "member");
+  assert.equal(removedDashboard.status, 403);
+  assert.deepEqual(removedDashboard.body, { error: "Your chapter access has been removed" });
+
+  const rejoin = await request(app, "POST", "/access/join", { code: "PGN-VALID" }, "member");
+  assert.equal(rejoin.status, 403);
+  assert.deepEqual(rejoin.body, { error: "Your chapter access has been removed" });
+});
+
+test("only admins can remove members, and self or Super Admin removal is protected", async () => {
+  state.users.push(
+    {
+      id: state.nextId++,
+      clerk_id: "clerk-super",
+      name: "Super Admin",
+      email: "super@example.com",
+      role: "super_admin",
+      status: "active",
+      created_at: new Date("2026-09-16T12:00:00.000Z"),
+    },
+    {
+      id: state.nextId++,
+      clerk_id: "clerk-member",
+      name: "Member",
+      email: "member@example.com",
+      role: "member",
+      status: "active",
+      created_at: new Date("2026-09-16T12:00:00.000Z"),
+    },
+  );
+  authByUser.super = { userId: "clerk-super", sessionClaims: { email: "super@example.com" } };
+  authByUser.member = { userId: "clerk-member", sessionClaims: { email: "member@example.com" } };
+  const app = buildApp();
+
+  const nonAdmin = await request(app, "DELETE", "/users/1", undefined, "member");
+  assert.equal(nonAdmin.status, 403);
+  assert.equal(state.users.find((user) => user.id === 1)?.status, "active");
+
+  const protectedSuper = await request(app, "DELETE", "/users/1", undefined, "super");
+  assert.equal(protectedSuper.status, 403);
+  assert.equal(state.users.find((user) => user.id === 1)?.status, "active");
+
+  const self = await request(app, "DELETE", "/users/2", undefined, "member");
+  assert.equal(self.status, 403);
+  assert.equal(state.users.find((user) => user.id === 2)?.status, "active");
+});
+
+test("removing an unlinked pre-approved member cannot be bypassed by signing in with that email", async () => {
+  state.users.push({
+    id: state.nextId++,
+    clerk_id: "clerk-admin",
+    name: "Chapter Admin",
+    email: "admin@example.com",
+    role: "admin",
+    status: "active",
+    created_at: new Date("2026-09-16T12:00:00.000Z"),
+  });
+  authByUser.admin = { userId: "clerk-admin", sessionClaims: { email: "admin@example.com" } };
+  authByUser.removed = { userId: "clerk-removed", sessionClaims: { email: "removed@example.com" } };
+  const app = buildApp();
+
+  const preapproved = await request(app, "POST", "/users", { name: "Removed Before Sign In", email: "removed@example.com" }, "admin");
+  assert.equal(preapproved.status, 201);
+  const remove = await request(app, "DELETE", `/users/${preapproved.body.id}`, undefined, "admin");
+  assert.equal(remove.status, 200);
+
+  state.invites.push({ code: "PGN-VALID", label: "Fall 2026", active: true });
+  const rejoin = await request(app, "POST", "/access/join", { code: "PGN-VALID" }, "removed");
+  assert.equal(rejoin.status, 403);
+  assert.deepEqual(rejoin.body, { error: "Your chapter access has been removed" });
+});
+
+test("a rejected Clerk identity cannot be replaced by another active pre-approved email", async () => {
+  state.users.push(
+    {
+      id: state.nextId++,
+      clerk_id: "clerk-rejected",
+      name: "Removed Member",
+      email: "removed@example.com",
+      role: "member",
+      status: "rejected",
+      created_at: new Date("2026-09-16T12:00:00.000Z"),
+    },
+    {
+      id: state.nextId++,
+      clerk_id: "preapproved:active@example.com",
+      name: "Active Pre-Approval",
+      email: "active@example.com",
+      role: "member",
+      status: "active",
+      created_at: new Date("2026-09-16T12:00:00.000Z"),
+    },
+  );
+  authByUser.conflict = { userId: "clerk-rejected", sessionClaims: { email: "active@example.com" } };
+  const response = await request(buildApp(), "GET", "/me", undefined, "conflict");
+  assert.equal(response.status, 403);
+  assert.deepEqual(response.body, { error: "Your chapter access has been removed" });
+  assert.equal(state.users[1]?.clerk_id, "preapproved:active@example.com");
 });
 
 test("links an admin pre-approved member to Clerk on the first authenticated request", async () => {

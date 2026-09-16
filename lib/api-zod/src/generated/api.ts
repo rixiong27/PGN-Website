@@ -87,7 +87,8 @@ export const GetDashboardResponse = zod.object({
   "openedAt": zod.coerce.date(),
   "closedAt": zod.coerce.date().nullish(),
   "voteCount": zod.number().int(),
-  "electorateCount": zod.number().int().nullish()
+  "electorateCount": zod.number().int().nullish(),
+  "candidateStatuses": zod.record(zod.string(), zod.enum(['open', 'closed']))
 })),
   "outstandingVotes": zod.number().int()
 })
@@ -380,7 +381,8 @@ export const ListVotingRoundsResponseItem = zod.object({
   "openedAt": zod.coerce.date(),
   "closedAt": zod.coerce.date().nullish(),
   "voteCount": zod.number().int(),
-  "electorateCount": zod.number().int().nullish()
+  "electorateCount": zod.number().int().nullish(),
+  "candidateStatuses": zod.record(zod.string(), zod.enum(['open', 'closed']))
 })
 export const ListVotingRoundsResponse = zod.array(ListVotingRoundsResponseItem)
 
@@ -408,7 +410,20 @@ export const CreateVotingRoundResponse = zod.object({
   "openedAt": zod.coerce.date(),
   "closedAt": zod.coerce.date().nullish(),
   "voteCount": zod.number().int(),
-  "electorateCount": zod.number().int().nullish()
+  "electorateCount": zod.number().int().nullish(),
+  "candidateStatuses": zod.record(zod.string(), zod.enum(['open', 'closed']))
+})
+
+
+/**
+ * @summary Permanently delete all closed voting rounds and their history
+ */
+export const clearVotingHistoryResponseDeletedCountMin = 0;
+
+
+
+export const ClearVotingHistoryResponse = zod.object({
+  "deletedCount": zod.number().int().min(clearVotingHistoryResponseDeletedCountMin)
 })
 
 
@@ -433,7 +448,8 @@ export const GetVotingRoundResponse = zod.object({
   "openedAt": zod.coerce.date(),
   "closedAt": zod.coerce.date().nullish(),
   "voteCount": zod.number().int(),
-  "electorateCount": zod.number().int().nullish()
+  "electorateCount": zod.number().int().nullish(),
+  "candidateStatuses": zod.record(zod.string(), zod.enum(['open', 'closed']))
 }).and(zod.object({
   "results": zod.array(zod.object({
   "pnmId": zod.number().int(),
@@ -448,6 +464,7 @@ export const GetVotingRoundResponse = zod.object({
   "noPercentage": zod.number().optional(),
   "notVotedPercentage": zod.number().optional(),
   "myChoice": zod.union([zod.literal('yes'),zod.literal('no'),zod.literal(null)]).nullish(),
+  "status": zod.enum(['open', 'closed']),
   "votes": zod.array(zod.object({
   "choice": zod.enum(['yes', 'no']).optional(),
   "score": zod.number().int().min(1).max(getVotingRoundResponseTwoResultsItemVotesItemScoreMax).optional(),
@@ -475,7 +492,8 @@ export const CloseVotingRoundResponse = zod.object({
   "openedAt": zod.coerce.date(),
   "closedAt": zod.coerce.date().nullish(),
   "voteCount": zod.number().int(),
-  "electorateCount": zod.number().int().nullish()
+  "electorateCount": zod.number().int().nullish(),
+  "candidateStatuses": zod.record(zod.string(), zod.enum(['open', 'closed']))
 })
 
 
@@ -496,6 +514,25 @@ export const CastVoteResponse = zod.object({
   "pnmId": zod.number().int(),
   "choice": zod.enum(['yes', 'no']),
   "saved": zod.boolean()
+})
+
+
+/**
+ * @summary Close or reopen voting for one PNM
+ */
+export const UpdateVotingCandidateStatusParams = zod.object({
+  "id": zod.coerce.number().int(),
+  "pnmId": zod.coerce.number().int()
+})
+
+export const UpdateVotingCandidateStatusBody = zod.object({
+  "status": zod.enum(['open', 'closed'])
+})
+
+export const UpdateVotingCandidateStatusResponse = zod.object({
+  "roundId": zod.number().int(),
+  "pnmId": zod.number().int(),
+  "status": zod.enum(['open', 'closed'])
 })
 
 
@@ -586,6 +623,24 @@ export const UpdateUserRoleBody = zod.object({
 })
 
 export const UpdateUserRoleResponse = zod.object({
+  "id": zod.number().int(),
+  "name": zod.string(),
+  "email": zod.string().email(),
+  "role": zod.enum(['super_admin', 'admin', 'member', 'pending']),
+  "status": zod.enum(['pending', 'active', 'rejected']),
+  "createdAt": zod.coerce.date()
+})
+
+
+/**
+ * Soft-revokes access without deleting the Clerk account or chapter history
+ * @summary Revoke a member or admin's chapter access
+ */
+export const RemoveUserParams = zod.object({
+  "id": zod.coerce.number().int()
+})
+
+export const RemoveUserResponse = zod.object({
   "id": zod.number().int(),
   "name": zod.string(),
   "email": zod.string().email(),

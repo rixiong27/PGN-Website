@@ -23,6 +23,7 @@ import type {
   ActivityLog,
   CSVImportInput,
   CSVImportResult,
+  ClearVotingHistoryResult,
   Dashboard,
   HealthStatus,
   InviteInput,
@@ -43,6 +44,8 @@ import type {
   UploadResponse,
   VoteInput,
   VoteReceipt,
+  VotingCandidateStatusResponse,
+  VotingCandidateStatusUpdate,
   VotingRound,
   VotingRoundDetail,
   VotingRoundInput
@@ -1403,6 +1406,80 @@ export const useCreateVotingRound = <TError = ErrorType<unknown>,
       return useMutation(getCreateVotingRoundMutationOptions(options));
     }
 
+export const getClearVotingHistoryUrl = () => {
+
+
+
+
+  return `/api/voting/rounds/history`
+}
+
+/**
+ * @summary Permanently delete all closed voting rounds and their history
+ */
+export const clearVotingHistory = async ( options?: Parameters<typeof customFetch>[1]): Promise<ClearVotingHistoryResult> => {
+
+  return customFetch<ClearVotingHistoryResult>(getClearVotingHistoryUrl(),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+
+export const getClearVotingHistoryMutationKey = () => ['clearVotingHistory'] as const;
+
+export const getClearVotingHistoryMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof clearVotingHistory>>, TError,void, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof clearVotingHistory>>, TError,void, TContext> => {
+
+const mutationKey = getClearVotingHistoryMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof clearVotingHistory>>, void> = () => {
+
+
+          return  clearVotingHistory(requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type ClearVotingHistoryMutationResult = NonNullable<Awaited<ReturnType<typeof clearVotingHistory>>>
+
+    export type ClearVotingHistoryMutationError = ErrorType<void>
+
+
+    /**
+ * @summary Permanently delete all closed voting rounds and their history
+ */
+export const useClearVotingHistory = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof clearVotingHistory>>, TError,void, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof clearVotingHistory>>,
+        TError,
+        void,
+        TContext
+      > => {
+      return useMutation(getClearVotingHistoryMutationOptions(options));
+    }
+
 export const getGetVotingRoundUrl = (id: number,) => {
 
 
@@ -1641,6 +1718,97 @@ export const useCastVote = <TError = ErrorType<unknown>,
         TContext
       > => {
       return useMutation(getCastVoteMutationOptions(options));
+    }
+
+export const getUpdateVotingCandidateStatusUrl = (id: number,
+    pnmId: number,) => {
+
+
+
+
+  return `/api/voting/rounds/${id}/pnms/${pnmId}/status`
+}
+
+/**
+ * @summary Close or reopen voting for one PNM
+ */
+export const updateVotingCandidateStatus = async (id: number,
+    pnmId: number,
+    votingCandidateStatusUpdate: VotingCandidateStatusUpdate, options?: Parameters<typeof customFetch>[1]): Promise<VotingCandidateStatusResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+return customFetch<VotingCandidateStatusResponse>(getUpdateVotingCandidateStatusUrl(id,pnmId),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(votingCandidateStatusUpdate)
+  }
+);}
+
+
+
+
+
+export const getUpdateVotingCandidateStatusMutationKey = () => ['updateVotingCandidateStatus'] as const;
+
+export const getUpdateVotingCandidateStatusMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateVotingCandidateStatus>>, TError,UpdateVotingCandidateStatusMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateVotingCandidateStatus>>, TError,UpdateVotingCandidateStatusMutationVariables, TContext> => {
+
+const mutationKey = getUpdateVotingCandidateStatusMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateVotingCandidateStatus>>, UpdateVotingCandidateStatusMutationVariables> = (props) => {
+          const {id,pnmId,data} = props ?? {};
+
+          return  updateVotingCandidateStatus(id,pnmId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateVotingCandidateStatusMutationResult = NonNullable<Awaited<ReturnType<typeof updateVotingCandidateStatus>>>
+    export type UpdateVotingCandidateStatusMutationBody = BodyType<VotingCandidateStatusUpdate>
+    export type UpdateVotingCandidateStatusMutationError = ErrorType<unknown>
+    export type UpdateVotingCandidateStatusMutationVariables = {id: number;pnmId: number;data: BodyType<VotingCandidateStatusUpdate>}
+
+    /**
+ * @summary Close or reopen voting for one PNM
+ */
+export const useUpdateVotingCandidateStatus = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateVotingCandidateStatus>>, TError,UpdateVotingCandidateStatusMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateVotingCandidateStatus>>,
+        TError,
+        UpdateVotingCandidateStatusMutationVariables,
+        TContext
+      > => {
+      return useMutation(getUpdateVotingCandidateStatusMutationOptions(options));
     }
 
 export const getListPendingApprovalsUrl = () => {
@@ -2120,6 +2288,81 @@ export const useUpdateUserRole = <TError = ErrorType<unknown>,
         TContext
       > => {
       return useMutation(getUpdateUserRoleMutationOptions(options));
+    }
+
+export const getRemoveUserUrl = (id: number,) => {
+
+
+
+
+  return `/api/users/${id}`
+}
+
+/**
+ * Soft-revokes access without deleting the Clerk account or chapter history
+ * @summary Revoke a member or admin's chapter access
+ */
+export const removeUser = async (id: number, options?: Parameters<typeof customFetch>[1]): Promise<Member> => {
+
+  return customFetch<Member>(getRemoveUserUrl(id),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+
+export const getRemoveUserMutationKey = () => ['removeUser'] as const;
+
+export const getRemoveUserMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof removeUser>>, TError,RemoveUserMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof removeUser>>, TError,RemoveUserMutationVariables, TContext> => {
+
+const mutationKey = getRemoveUserMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof removeUser>>, RemoveUserMutationVariables> = (props) => {
+          const {id} = props ?? {};
+
+          return  removeUser(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type RemoveUserMutationResult = NonNullable<Awaited<ReturnType<typeof removeUser>>>
+
+    export type RemoveUserMutationError = ErrorType<void>
+    export type RemoveUserMutationVariables = {id: number}
+
+    /**
+ * @summary Revoke a member or admin's chapter access
+ */
+export const useRemoveUser = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof removeUser>>, TError,RemoveUserMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof removeUser>>,
+        TError,
+        RemoveUserMutationVariables,
+        TContext
+      > => {
+      return useMutation(getRemoveUserMutationOptions(options));
     }
 
 export const getListActivityUrl = (params?: ListActivityParams,) => {

@@ -10,7 +10,7 @@ const voteCreatedAt = new Date("2026-09-16T12:30:00.000Z");
 
 const fakePool = {
   async query<T = Record<string, unknown>>(sql: string): Promise<{ rows: T[] }> {
-    if (sql.includes("FROM pgn_users WHERE clerk_id = $1 OR")) {
+    if (sql.includes("FROM pgn_users WHERE clerk_id = $1")) {
       return {
         rows: [{
           id: 7,
@@ -111,6 +111,7 @@ test("returns voting results as an array for an authenticated member", async () 
     pnmName: "Taylor Candidate",
     average: 3.5,
     voteCount: 2,
+    status: "open",
   }]);
 });
 
@@ -127,6 +128,7 @@ test("includes individual votes in the results array for an authenticated admin"
     pnmName: "Taylor Candidate",
     average: 3.5,
     voteCount: 2,
+    status: "open",
     votes: [{
       score: 4,
       memberName: "Voting Member",

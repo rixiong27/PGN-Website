@@ -5,6 +5,7 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { VotingRoundCandidateStatuses } from './votingRoundCandidateStatuses';
 import type { VotingRoundStatus } from './votingRoundStatus';
 import type { VotingRoundVotingMode } from './votingRoundVotingMode';
 
@@ -22,4 +23,5 @@ export interface VotingRound {
   voteCount: number;
   /** @nullable */
   electorateCount?: number | null;
+  candidateStatuses: VotingRoundCandidateStatuses;
 }

@@ -50,6 +50,10 @@ export const votingRoundsTable = pgTable("pgn_voting_rounds", {
   votingMode: text("voting_mode"),
   electorateCount: integer("electorate_count"),
   resultsSnapshot: jsonb("results_snapshot"),
+  // Candidate-level locks are intentionally stored with the round so a vote
+  // and a close/reopen operation can serialize on the same round lock.
+  // Missing keys mean open, which keeps older rounds backwards compatible.
+  candidateStatuses: jsonb("candidate_statuses").notNull().default({}),
   pnmIds: integer("pnm_ids").array().notNull(),
   deadline: timestamp("deadline", { withTimezone: true }),
   openedAt: timestamp("opened_at", { withTimezone: true }).notNull().defaultNow(),

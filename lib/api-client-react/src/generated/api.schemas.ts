@@ -88,6 +88,8 @@ export const VotingRoundVotingMode = {
   numeric: 'numeric',
 } as const;
 
+export type VotingRoundCandidateStatuses = {[key: string]: 'open' | 'closed'};
+
 export interface VotingRound {
   id: number;
   name: string;
@@ -102,6 +104,7 @@ export interface VotingRound {
   voteCount: number;
   /** @nullable */
   electorateCount?: number | null;
+  candidateStatuses: VotingRoundCandidateStatuses;
 }
 
 export interface Dashboard {
@@ -223,6 +226,11 @@ export interface VotingRoundInput {
   deadline?: string | null;
 }
 
+export interface ClearVotingHistoryResult {
+  /** @minimum 0 */
+  deletedCount: number;
+}
+
 /**
  * @nullable
  */
@@ -232,6 +240,14 @@ export type VoteResultMyChoice = typeof VoteResultMyChoice[keyof typeof VoteResu
 export const VoteResultMyChoice = {
   yes: 'yes',
   no: 'no',
+} as const;
+
+export type VoteResultStatus = typeof VoteResultStatus[keyof typeof VoteResultStatus];
+
+
+export const VoteResultStatus = {
+  open: 'open',
+  closed: 'closed',
 } as const;
 
 export type AdminVoteChoice = typeof AdminVoteChoice[keyof typeof AdminVoteChoice];
@@ -268,6 +284,7 @@ export interface VoteResult {
   notVotedPercentage?: number;
   /** @nullable */
   myChoice?: VoteResultMyChoice;
+  status: VoteResultStatus;
   votes?: AdminVote[];
 }
 
@@ -301,6 +318,32 @@ export interface VoteReceipt {
   pnmId: number;
   choice: VoteReceiptChoice;
   saved: boolean;
+}
+
+export type VotingCandidateStatusUpdateStatus = typeof VotingCandidateStatusUpdateStatus[keyof typeof VotingCandidateStatusUpdateStatus];
+
+
+export const VotingCandidateStatusUpdateStatus = {
+  open: 'open',
+  closed: 'closed',
+} as const;
+
+export interface VotingCandidateStatusUpdate {
+  status: VotingCandidateStatusUpdateStatus;
+}
+
+export type VotingCandidateStatusResponseStatus = typeof VotingCandidateStatusResponseStatus[keyof typeof VotingCandidateStatusResponseStatus];
+
+
+export const VotingCandidateStatusResponseStatus = {
+  open: 'open',
+  closed: 'closed',
+} as const;
+
+export interface VotingCandidateStatusResponse {
+  roundId: number;
+  pnmId: number;
+  status: VotingCandidateStatusResponseStatus;
 }
 
 export interface PendingApproval {

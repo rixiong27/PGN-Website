@@ -286,6 +286,22 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/VotingRound"
+  /voting/rounds/history:
+    delete:
+      operationId: clearVotingHistory
+      tags: [voting]
+      summary: Permanently delete all closed voting rounds and their history
+      responses:
+        "200":
+          description: Number of closed voting rounds removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClearVotingHistoryResult"
+        "403":
+          description: Admin access required
+        "500":
+          description: History could not be cleared; no changes were saved
   /voting/rounds/{id}:
     get:
       operationId: getVotingRound
@@ -334,6 +350,31 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/VoteReceipt"
+  /voting/rounds/{id}/pnms/{pnmId}/status:
+    patch:
+      operationId: updateVotingCandidateStatus
+      tags: [voting]
+      summary: Close or reopen voting for one PNM
+      parameters:
+        - $ref: "#/components/parameters/Id"
+        - name: pnmId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VotingCandidateStatusUpdate"
+      responses:
+        "200":
+          description: Updated candidate voting status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VotingCandidateStatusResponse"
   /approvals:
     get:
       operationId: listPendingApprovals
@@ -423,6 +464,25 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Member"
+  /users/{id}:
+    delete:
+      operationId: removeUser
+      tags: [users]
+      summary: Revoke a member or admin's chapter access
+      description: Soft-revokes access without deleting the Clerk account or chapter history
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Removed member
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Member"
+        "403":
+          description: The target is protected or the caller lacks permission
+        "404":
+          description: Member not found
   /activity:
     get:
       operationId: listActivity
@@ -655,7 +715,7 @@ components:
         pinned: { type: boolean }
     VotingRound:
       type: object
-      required: [id, name, status, votingMode, pnmIds, openedAt, voteCount]
+      required: [id, name, status, votingMode, pnmIds, openedAt, voteCount, candidateStatuses]
       properties:
         id: { type: integer }
         name: { type: string }
@@ -673,6 +733,11 @@ components:
         closedAt: { type: ["string", "null"], format: date-time }
         voteCount: { type: integer }
         electorateCount: { type: ["integer", "null"] }
+        candidateStatuses:
+          type: object
+          additionalProperties:
+            type: string
+            enum: [open, closed]
     VotingRoundInput:
       type: object
       required: [name, pnmIds]
@@ -683,6 +748,11 @@ components:
           minItems: 1
           items: { type: integer }
         deadline: { type: ["string", "null"], format: date-time }
+    ClearVotingHistoryResult:
+      type: object
+      required: [deletedCount]
+      properties:
+        deletedCount: { type: integer, minimum: 0 }
     VotingRoundDetail:
       allOf:
         - $ref: "#/components/schemas/VotingRound"
@@ -693,7 +763,7 @@ components:
             $ref: "#/components/schemas/VoteResult"
     VoteResult:
       type: object
-      required: [pnmId, pnmName, voteCount]
+      required: [pnmId, pnmName, voteCount, status]
       properties:
         pnmId: { type: integer }
         pnmName: { type: string }
@@ -709,6 +779,9 @@ components:
         myChoice:
           type: ["string", "null"]
           enum: [yes, no, null]
+        status:
+          type: string
+          enum: [open, closed]
         votes:
           type: array
           items:
@@ -741,6 +814,22 @@ components:
           type: string
           enum: [yes, no]
         saved: { type: boolean }
+    VotingCandidateStatusUpdate:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [open, closed]
+    VotingCandidateStatusResponse:
+      type: object
+      required: [roundId, pnmId, status]
+      properties:
+        roundId: { type: integer }
+        pnmId: { type: integer }
+        status:
+          type: string
+          enum: [open, closed]
     PendingApproval:
       type: object
       required: [id, name, email, requestedAt]

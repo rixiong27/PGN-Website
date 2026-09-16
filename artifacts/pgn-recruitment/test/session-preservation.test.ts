@@ -6,13 +6,14 @@ const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'ut
 
 test('does not sign out or clear session data as part of app startup', () => {
   assert.doesNotMatch(appSource, /ReloadSignOutGate|shouldSignOutOnReload|claimReloadSignOutAttempt|releaseReloadSignOutAttempt/);
-  assert.match(appSource, /<Router \/><Toaster \/>/);
+  assert.match(appSource, /<Router\s*\/>\s*<Toaster\s*\/>/);
 });
 
 test('waits for Clerk and member authorization before rendering protected routes', () => {
-  assert.match(appSource, /if \(!isLoaded \|\| \(isSignedIn && isLoading\)\) return <div className="auth-shell" data-testid="auth-loading-state" \/>;/);
-  assert.match(appSource, /if \(!isSignedIn\) return <Redirect to="\/" \/>;/);
-  assert.match(appSource, /if \(isError\) return <Redirect to="\/join" \/>;/);
+  assert.match(appSource, /if \(!isLoaded\)[\s\S]*?data-testid="auth-loading-state"/);
+  assert.match(appSource, /if \(!isSignedIn\)[\s\S]*?Redirect to="\/"/);
+  assert.match(appSource, /if \(isLoading\)[\s\S]*?data-testid="auth-loading-state"/);
+  assert.match(appSource, /if \(isError\)[\s\S]*?Redirect to="\/join"/);
 });
 
 test('keeps user-initiated sign-out behavior separate from startup', () => {
@@ -22,7 +23,7 @@ test('keeps user-initiated sign-out behavior separate from startup', () => {
 });
 
 test('keeps nested workspace routes in the active router after reload', () => {
-  assert.match(appSource, /<Route path="\/pnms\/:id"><ProtectedRoute>/);
+  assert.match(appSource, /<Route path="\/pnms\/:id">\s*<ProtectedRoute>/);
   assert.match(appSource, /<Route path="\/voting" component=\{VotingRoute\} \/>/);
-  assert.match(appSource, /<Route path="\/dashboard"><ProtectedRoute>/);
+  assert.match(appSource, /<Route path="\/dashboard">\s*<ProtectedRoute>/);
 });

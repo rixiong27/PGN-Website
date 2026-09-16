@@ -23,8 +23,11 @@ import {
   ListNotesParams,
   ListPnmsQueryParams,
   RejectMemberParams,
+  RemoveUserParams,
   ToggleNotePinBody,
   ToggleNotePinParams,
+  UpdateVotingCandidateStatusBody,
+  UpdateVotingCandidateStatusParams,
   UpdatePnmBody,
   UpdatePnmParams,
   UpdateUserRoleBody,
@@ -39,6 +42,7 @@ let activePhotoStorage = new ObjectStorageService();
 type Role = "super_admin" | "admin" | "member" | "pending";
 type VotingMode = "binary" | "numeric";
 type VoteChoice = "yes" | "no";
+type CandidateVotingStatus = "open" | "closed";
 type MemberRow = { id: number; clerk_id: string; name: string; email: string; role: Role; status: string; created_at: Date };
 type AuthedRequest = Request & { member?: MemberRow };
 type BinaryVoteSnapshot = {
@@ -153,6 +157,30 @@ function percentage(count: number, total: number): number {
   return total > 0 ? Number(((count / total) * 100).toFixed(1)) : 0;
 }
 
+export function normalizeVotingDeadlineInput(value: unknown): unknown {
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return `${value}T23:59:59.999Z`;
+  }
+  return value;
+}
+
+function candidateStatusesForRound(round: Record<string, unknown>): Record<string, CandidateVotingStatus> {
+  const configured = round.candidate_statuses;
+  const statuses: Record<string, CandidateVotingStatus> = {};
+  const configuredStatuses = configured && typeof configured === "object" && !Array.isArray(configured)
+    ? configured as Record<string, unknown>
+    : {};
+  for (const pnmId of Array.isArray(round.pnm_ids) ? round.pnm_ids : []) {
+    const value = configuredStatuses[String(pnmId)];
+    statuses[String(pnmId)] = round.status === "closed" || value === "closed" ? "closed" : "open";
+  }
+  return statuses;
+}
+
+function candidateVotingStatus(round: Record<string, unknown>, pnmId: unknown): CandidateVotingStatus {
+  return candidateStatusesForRound(round)[String(pnmId)] ?? "open";
+}
+
 async function activeElectorateCount(): Promise<number> {
   const result = await activePool.query<{ count: number | string }>(
     "SELECT COUNT(*)::int AS count FROM pgn_users WHERE status='active' AND role IN ('member','admin','super_admin')",
@@ -160,21 +188,53 @@ async function activeElectorateCount(): Promise<number> {
   return Number(result.rows[0]?.count ?? 0);
 }
 
-async function withTransaction<T>(
+const MAX_TRANSACTION_ATTEMPTS = 3;
+
+function transactionErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
+}
+
+function isRetryableTransactionError(error: unknown): boolean {
+  const code = transactionErrorCode(error);
+  return code === "40001" || code === "40P01";
+}
+
+function transactionRetryDelay(attempt: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 5 * (attempt + 1)));
+}
+
+export async function withTransaction<T>(
   callback: (client: typeof activePool) => Promise<T>,
 ): Promise<T> {
-  const client = await activePool.connect();
-  try {
-    await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
-    const value = await callback(client as unknown as typeof activePool);
-    await client.query("COMMIT");
-    return value;
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
+  for (let attempt = 0; attempt < MAX_TRANSACTION_ATTEMPTS; attempt += 1) {
+    // Serializable failures invalidate the current transaction snapshot. A
+    // retry must use a fresh connection and BEGIN, not reuse this client.
+    const client = await activePool.connect();
+    let retry = false;
+    try {
+      await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+      const value = await callback(client as unknown as typeof activePool);
+      await client.query("COMMIT");
+      return value;
+    } catch (error) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        // Preserve the original transaction error; the client is released
+        // below and must not be reused after a failed rollback.
+      }
+      if (!isRetryableTransactionError(error) || attempt === MAX_TRANSACTION_ATTEMPTS - 1) {
+        throw error;
+      }
+      retry = true;
+    } finally {
+      client.release();
+    }
+    if (retry) await transactionRetryDelay(attempt);
   }
+  throw new Error("Transaction retry limit reached");
 }
 
 function votingRoundView(
@@ -194,6 +254,7 @@ function votingRoundView(
     closedAt: round.closed_at ? new Date(round.closed_at).toISOString() : null,
     voteCount,
     electorateCount: electorateCount ?? (round.electorate_count == null ? null : Number(round.electorate_count)),
+    candidateStatuses: candidateStatusesForRound(round),
   };
 }
 
@@ -209,7 +270,12 @@ function binarySnapshot(row: Record<string, unknown>): BinaryRoundSnapshot | nul
   };
 }
 
-function binaryResultView(result: BinaryResultSnapshot, viewerId: number, isAdmin: boolean) {
+function binaryResultView(
+  result: BinaryResultSnapshot,
+  viewerId: number,
+  isAdmin: boolean,
+  status: CandidateVotingStatus = "closed",
+) {
   const myVote = result.votes.find((vote) => vote.voterId === viewerId);
   return {
     pnmId: result.pnmId,
@@ -223,6 +289,7 @@ function binaryResultView(result: BinaryResultSnapshot, viewerId: number, isAdmi
     noPercentage: result.noPercentage,
     notVotedPercentage: result.notVotedPercentage,
     myChoice: myVote?.choice ?? null,
+    status,
     ...(isAdmin ? { votes: result.votes } : {}),
   };
 }
@@ -264,22 +331,17 @@ async function ensureMember(req: AuthedRequest, res: Response, next: NextFunctio
     return;
   }
   const claims = (auth.sessionClaims ?? {}) as Record<string, unknown>;
-  const claimedEmail = claimIdentity(claims)?.email ?? null;
   const existing = await activePool.query<MemberRow>(
-    "SELECT * FROM pgn_users WHERE clerk_id = $1 OR (lower(email) = $2 AND clerk_id LIKE 'preapproved:%') LIMIT 1",
-    [clerkId, claimedEmail],
+    "SELECT * FROM pgn_users WHERE clerk_id = $1",
+    [clerkId],
   );
   if (existing.rows[0]) {
     const member = existing.rows[0];
-    if (member.clerk_id !== clerkId) {
-      const linked = await activePool.query<MemberRow>(
-        "UPDATE pgn_users SET clerk_id = $1 WHERE id = $2 RETURNING *",
-        [clerkId, member.id],
-      );
-      req.member = linked.rows[0] ?? member;
-    } else {
-      req.member = member;
+    if (member.status === "rejected") {
+      res.status(403).json({ error: "Your chapter access has been removed" });
+      return;
     }
+    req.member = member;
     next();
     return;
   }
@@ -303,7 +365,7 @@ async function ensureMember(req: AuthedRequest, res: Response, next: NextFunctio
   }
   const name = identity.name?.trim() || email.split("@")[0];
   const preapproved = await activePool.query<MemberRow>(
-    "SELECT * FROM pgn_users WHERE lower(email) = $1 AND clerk_id LIKE 'preapproved:%' LIMIT 1",
+    "SELECT * FROM pgn_users WHERE lower(email) = $1 AND clerk_id LIKE 'preapproved:%' AND status = 'active' LIMIT 1",
     [email],
   );
   if (preapproved.rows[0]) {
@@ -316,6 +378,14 @@ async function ensureMember(req: AuthedRequest, res: Response, next: NextFunctio
     return;
   }
 
+  const removed = await activePool.query(
+    "SELECT id FROM pgn_users WHERE lower(email) = $1 AND status = 'rejected' LIMIT 1",
+    [email],
+  );
+  if (removed.rows[0]) {
+    res.status(403).json({ error: "Your chapter access has been removed" });
+    return;
+  }
   res.status(403).json({ error: "Join the VT PGN chapter before accessing the workspace" });
 }
 
@@ -378,6 +448,10 @@ router.post("/access/join", async (req, res): Promise<void> => {
   }
   const current = await activePool.query<MemberRow>("SELECT * FROM pgn_users WHERE clerk_id = $1", [clerkId]);
   if (current.rows[0]) {
+    if (current.rows[0].status === "rejected") {
+      res.status(403).json({ error: "Your chapter access has been removed" });
+      return;
+    }
     res.status(201).json(memberView(current.rows[0]));
     return;
   }
@@ -441,6 +515,14 @@ router.post("/access/join", async (req, res): Promise<void> => {
   }
   const duplicateEmail = await activePool.query("SELECT id FROM pgn_users WHERE lower(email) = $1", [email]);
   if (duplicateEmail.rows[0]) {
+    const removed = await activePool.query(
+      "SELECT id FROM pgn_users WHERE lower(email) = $1 AND status = 'rejected' LIMIT 1",
+      [email],
+    );
+    if (removed.rows[0]) {
+      res.status(403).json({ error: "Your chapter access has been removed" });
+      return;
+    }
     res.status(409).json({ error: "This email is already linked to another account" });
     return;
   }
@@ -458,6 +540,10 @@ router.get("/me", (req: AuthedRequest, res) => {
 });
 
 router.use((req: AuthedRequest, res: Response, next: NextFunction): void => {
+  if (req.member?.status === "rejected") {
+    res.status(403).json({ error: "Your chapter access has been removed" });
+    return;
+  }
   if (req.member?.status !== "active") {
     res.status(403).json({ error: "Your chapter account is awaiting approval" });
     return;
@@ -469,7 +555,7 @@ router.get("/dashboard", async (_req, res): Promise<void> => {
   const [total, active, pending, pipeline, rounds] = await Promise.all([
     activePool.query("SELECT COUNT(*)::int AS count FROM pgn_pnms"),
     activePool.query("SELECT COUNT(*)::int AS count FROM pgn_pnms WHERE archived = false"),
-    activePool.query("SELECT COUNT(*)::int AS count FROM pgn_users WHERE role = 'pending'"),
+    activePool.query("SELECT COUNT(*)::int AS count FROM pgn_users WHERE role = 'pending' AND status = 'pending'"),
     activePool.query("SELECT status, COUNT(*)::int AS count FROM pgn_pnms WHERE archived = false GROUP BY status ORDER BY status"),
     activePool.query(`SELECT r.*, COUNT(voter.id)::int AS vote_count FROM pgn_voting_rounds r
       LEFT JOIN pgn_votes v ON v.round_id = r.id
@@ -676,8 +762,48 @@ router.get("/voting/rounds", async (req, res): Promise<void> => {
   )));
 });
 
+router.delete("/voting/rounds/history", requireRole("super_admin", "admin"), async (req: AuthedRequest, res): Promise<void> => {
+  try {
+    const result = await withTransaction(async (client) => {
+      // Lock the eligible rows before taking their ids. An open round that is
+      // closed after this SELECT is not in the deletion set and survives this
+      // clear operation.
+      const closedRounds = await client.query<{ id: number }>(
+        "SELECT id FROM pgn_voting_rounds WHERE status = 'closed' FOR UPDATE",
+      );
+      const roundIds = closedRounds.rows.map((round) => Number(round.id)).filter(Number.isInteger);
+      let deletedCount = 0;
+      if (roundIds.length) {
+        // Votes are explicitly removed first because older installations may
+        // not have a foreign key with ON DELETE CASCADE.
+        await client.query("DELETE FROM pgn_votes WHERE round_id = ANY($1::int[])", [roundIds]);
+        const deleted = await client.query<{ id: number }>(
+          "DELETE FROM pgn_voting_rounds WHERE id = ANY($1::int[]) AND status = 'closed' RETURNING id",
+          [roundIds],
+        );
+        deletedCount = deleted.rows.length;
+      }
+      await client.query(
+        "INSERT INTO pgn_activity (actor_name, action, target) VALUES ($1, $2, $3)",
+        [
+          req.member!.name,
+          "Cleared voting history",
+          `${deletedCount} closed voting round${deletedCount === 1 ? "" : "s"} and associated votes`,
+        ],
+      );
+      return { deletedCount };
+    });
+    res.json(result);
+  } catch {
+    res.status(500).json({ error: "Voting history could not be cleared. No changes were saved." });
+  }
+});
+
 router.post("/voting/rounds", requireRole("super_admin", "admin"), async (req, res): Promise<void> => {
-  const parsed = CreateVotingRoundBody.safeParse(req.body);
+  const parsed = CreateVotingRoundBody.safeParse({
+    ...req.body,
+    deadline: normalizeVotingDeadlineInput(req.body?.deadline),
+  });
   if (!parsed.success) { res.status(400).json({ error: parsed.error.message }); return; }
   const result = await activePool.query("INSERT INTO pgn_voting_rounds (name, voting_mode, pnm_ids, deadline) VALUES ($1,'binary',$2,$3) RETURNING *", [parsed.data.name, parsed.data.pnmIds, parsed.data.deadline ?? null]);
   const round = result.rows[0];
@@ -699,7 +825,10 @@ router.get("/voting/rounds/:id", async (req: AuthedRequest, res): Promise<void> 
   let detail: Record<string, unknown>[];
   let voteCount: number;
   if (snapshot) {
-    detail = snapshot.results.map((result) => binaryResultView(result, req.member!.id, isAdmin));
+    // A round snapshot is immutable history; the whole round is closed, so
+    // its candidate controls are closed even if the old snapshot has no
+    // candidate-level status keys.
+    detail = snapshot.results.map((result) => binaryResultView(result, req.member!.id, isAdmin, "closed"));
     voteCount = snapshot.voteCount;
   } else {
     const results = mode === "binary"
@@ -738,6 +867,7 @@ router.get("/voting/rounds/:id", async (req: AuthedRequest, res): Promise<void> 
           noPercentage: percentage(noCount, electorateCount!),
           notVotedPercentage: percentage(Math.max(electorateCount! - Number(row.vote_count ?? 0), 0), electorateCount!),
           myChoice: voteChoice(row.my_score),
+          status: candidateVotingStatus(round, row.pnm_id),
         };
         if (isAdmin) {
           const votes = await activePool.query("SELECT v.score, u.id AS voter_id, u.name AS member_name, v.created_at FROM pgn_votes v JOIN pgn_users u ON u.id = v.voter_id AND u.status = 'active' AND u.role IN ('member','admin','super_admin') WHERE v.round_id = $1 AND v.pnm_id = $2 ORDER BY v.created_at", [round.id, row.pnm_id]);
@@ -750,7 +880,13 @@ router.get("/voting/rounds/:id", async (req: AuthedRequest, res): Promise<void> 
         }
         return candidate;
       }
-      const candidate: Record<string, unknown> = { pnmId: row.pnm_id, pnmName: row.pnm_name, average: row.average == null ? null : Number(Number(row.average).toFixed(2)), voteCount: Number(row.vote_count) };
+      const candidate: Record<string, unknown> = {
+        pnmId: row.pnm_id,
+        pnmName: row.pnm_name,
+        average: row.average == null ? null : Number(Number(row.average).toFixed(2)),
+        voteCount: Number(row.vote_count),
+        status: candidateVotingStatus(round, row.pnm_id),
+      };
       if (isAdmin) {
         const votes = await activePool.query("SELECT v.score, u.name AS member_name, v.created_at FROM pgn_votes v JOIN pgn_users u ON u.id = v.voter_id WHERE v.round_id = $1 AND v.pnm_id = $2 ORDER BY v.created_at", [round.id, row.pnm_id]);
         candidate.votes = votes.rows.map((vote) => ({ score: vote.score, memberName: vote.member_name, createdAt: new Date(vote.created_at).toISOString() }));
@@ -849,6 +985,65 @@ router.post("/voting/rounds/:id/close", requireRole("super_admin", "admin"), asy
   res.json(votingRoundView(result.round, result.snapshot.voteCount, result.snapshot.electorateCount));
 });
 
+router.patch(
+  "/voting/rounds/:id/pnms/:pnmId/status",
+  requireRole("super_admin"),
+  async (req: AuthedRequest, res): Promise<void> => {
+    const params = UpdateVotingCandidateStatusParams.safeParse(req.params);
+    const parsed = UpdateVotingCandidateStatusBody.safeParse(req.body);
+    if (!params.success || !parsed.success) {
+      res.status(400).json({ error: "Candidate status must be open or closed" });
+      return;
+    }
+
+    const result = await withTransaction(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock($1)", [params.data.id]);
+      const roundResult = await client.query(
+        "SELECT * FROM pgn_voting_rounds WHERE id = $1 FOR UPDATE",
+        [params.data.id],
+      );
+      const round = roundResult.rows[0];
+      if (!round) return { notFound: true as const };
+      if (round.status !== "open") return { roundClosed: true as const };
+      if (round.voting_mode !== "binary") return { legacy: true as const };
+      if (!(round.pnm_ids as number[]).includes(params.data.pnmId)) return { invalidPnm: true as const };
+
+      const statuses = candidateStatusesForRound(round);
+      statuses[String(params.data.pnmId)] = parsed.data.status;
+      const updated = await client.query(
+        `UPDATE pgn_voting_rounds
+         SET candidate_statuses = $2::jsonb
+         WHERE id = $1 AND status = 'open'
+         RETURNING *`,
+        [params.data.id, JSON.stringify(statuses)],
+      );
+      return { updated: updated.rows[0] ?? { ...round, candidate_statuses: statuses } };
+    });
+
+    if ("notFound" in result) {
+      res.status(404).json({ error: "Voting round not found" });
+      return;
+    }
+    if ("roundClosed" in result) {
+      res.status(409).json({ error: "This voting round is closed; reopen the round before changing candidate voting" });
+      return;
+    }
+    if ("legacy" in result) {
+      res.status(409).json({ error: "Legacy rounds do not support candidate-level voting status" });
+      return;
+    }
+    if ("invalidPnm" in result) {
+      res.status(400).json({ error: "PNM is not part of this round" });
+      return;
+    }
+    res.json({
+      roundId: params.data.id,
+      pnmId: params.data.pnmId,
+      status: candidateVotingStatus(result.updated, params.data.pnmId),
+    });
+  },
+);
+
 router.post("/voting/rounds/:id/votes", async (req: AuthedRequest, res): Promise<void> => {
   const params = CastVoteParams.safeParse(req.params);
   const parsed = CastVoteBody.safeParse(req.body);
@@ -864,6 +1059,7 @@ router.post("/voting/rounds/:id/votes", async (req: AuthedRequest, res): Promise
     if (!round || round.status !== "open" || round.voting_mode !== "binary") return { closed: true as const };
     if (round.deadline_passed) return { expired: true as const };
     if (!(round.pnm_ids as number[]).includes(parsed.data.pnmId)) return { invalidPnm: true as const };
+    if (candidateVotingStatus(round, parsed.data.pnmId) === "closed") return { candidateClosed: true as const };
     const voter = await client.query(
       "SELECT id FROM pgn_users WHERE id=$1 AND status='active' AND role IN ('member','admin','super_admin') FOR SHARE",
       [req.member!.id],
@@ -879,19 +1075,20 @@ router.post("/voting/rounds/:id/votes", async (req: AuthedRequest, res): Promise
   if ("closed" in result) { res.status(409).json({ error: "This voting round is closed" }); return; }
   if ("expired" in result) { res.status(409).json({ error: "This voting round deadline has passed" }); return; }
   if ("invalidPnm" in result) { res.status(400).json({ error: "PNM is not part of this round" }); return; }
+  if ("candidateClosed" in result) { res.status(409).json({ error: "Voting for this candidate is closed by a super admin" }); return; }
   if ("inactive" in result) { res.status(403).json({ error: "Only active chapter members can vote" }); return; }
   res.status(201).json({ roundId: params.data.id, pnmId: parsed.data.pnmId, choice: parsed.data.choice, saved: true });
 });
 
 router.get("/approvals", requireRole("super_admin", "admin"), async (_req, res): Promise<void> => {
-  const result = await activePool.query("SELECT id, name, email, created_at FROM pgn_users WHERE role='pending' ORDER BY created_at");
+  const result = await activePool.query("SELECT id, name, email, created_at FROM pgn_users WHERE role='pending' AND status='pending' ORDER BY created_at");
   res.json(result.rows.map((row) => ({ id: row.id, name: row.name, email: row.email, requestedAt: new Date(row.created_at).toISOString(), inviteLabel: null })));
 });
 
 router.post("/approvals/:id/approve", requireRole("super_admin", "admin"), async (req: AuthedRequest, res): Promise<void> => {
   const params = ApproveMemberParams.safeParse(req.params);
   if (!params.success) { res.status(400).json({ error: "Invalid member" }); return; }
-  const result = await activePool.query("UPDATE pgn_users SET role='member', status='active' WHERE id=$1 AND role='pending' RETURNING *", [params.data.id]);
+  const result = await activePool.query("UPDATE pgn_users SET role='member', status='active' WHERE id=$1 AND role='pending' AND status='pending' RETURNING *", [params.data.id]);
   if (!result.rows[0]) { res.status(404).json({ error: "Pending member not found" }); return; }
   await logActivity(req.member!, "Approved member", result.rows[0].email);
   res.json(memberView(result.rows[0]));
@@ -900,13 +1097,17 @@ router.post("/approvals/:id/approve", requireRole("super_admin", "admin"), async
 router.post("/approvals/:id/reject", requireRole("super_admin", "admin"), async (req: AuthedRequest, res): Promise<void> => {
   const params = RejectMemberParams.safeParse(req.params);
   if (!params.success) { res.status(400).json({ error: "Invalid member" }); return; }
-  await activePool.query("UPDATE pgn_users SET status='rejected' WHERE id=$1 AND role='pending'", [params.data.id]);
-  await logActivity(req.member!, "Rejected member", String(params.data.id));
+  const result = await activePool.query<MemberRow>("UPDATE pgn_users SET status='rejected' WHERE id=$1 AND role='pending' AND status='pending' RETURNING *", [params.data.id]);
+  if (!result.rows[0]) {
+    res.status(404).json({ error: "Pending member not found" });
+    return;
+  }
+  await logActivity(req.member!, "Rejected member", result.rows[0].email);
   res.status(204).send();
 });
 
 router.get("/users", requireRole("super_admin", "admin"), async (_req, res): Promise<void> => {
-  const result = await activePool.query<MemberRow>("SELECT * FROM pgn_users WHERE status='active' ORDER BY name");
+  const result = await activePool.query<MemberRow>("SELECT * FROM pgn_users WHERE status IN ('active', 'rejected') AND role IN ('member', 'admin', 'super_admin') ORDER BY name");
   res.json(result.rows.map(memberView));
 });
 
@@ -942,6 +1143,61 @@ router.patch("/users/:id/role", requireRole("super_admin", "admin"), async (req:
   const result = await activePool.query<MemberRow>("UPDATE pgn_users SET role=$1 WHERE id=$2 RETURNING *", [parsed.data.role, params.data.id]);
   await logActivity(req.member!, `${parsed.data.role === "admin" ? "Promoted" : "Demoted"} user`, result.rows[0].email);
   res.json(memberView(result.rows[0]));
+});
+
+router.delete("/users/:id", requireRole("super_admin", "admin"), async (req: AuthedRequest, res): Promise<void> => {
+  const params = RemoveUserParams.safeParse(req.params);
+  if (!params.success) {
+    res.status(400).json({ error: "Invalid member" });
+    return;
+  }
+
+  const result = await withTransaction(async (client) => {
+    const targetResult = await client.query<MemberRow>(
+      "SELECT * FROM pgn_users WHERE id=$1 FOR UPDATE",
+      [params.data.id],
+    );
+    const target = targetResult.rows[0];
+    if (!target) return { notFound: true as const };
+    if (target.id === req.member!.id) return { self: true as const };
+    if (target.role === "super_admin") return { protected: true as const };
+    if (target.role !== "member" && target.role !== "admin") return { invalidRole: true as const };
+    if (target.status !== "active") return { alreadyRemoved: true as const, target };
+
+    const updated = await client.query<MemberRow>(
+      "UPDATE pgn_users SET status='rejected' WHERE id=$1 AND status='active' RETURNING *",
+      [target.id],
+    );
+    const member = updated.rows[0];
+    if (!member) return { alreadyRemoved: true as const, target };
+    await client.query(
+      "INSERT INTO pgn_activity (actor_name, action, target) VALUES ($1, $2, $3)",
+      [req.member!.name, "Removed member", `${member.name} (${member.email})`],
+    );
+    return { member };
+  });
+
+  if ("notFound" in result) {
+    res.status(404).json({ error: "Member not found" });
+    return;
+  }
+  if ("self" in result) {
+    res.status(403).json({ error: "You cannot remove your own account" });
+    return;
+  }
+  if ("protected" in result) {
+    res.status(403).json({ error: "The Super Admin cannot be removed" });
+    return;
+  }
+  if ("invalidRole" in result) {
+    res.status(403).json({ error: "Only members and admins can be removed" });
+    return;
+  }
+  if ("alreadyRemoved" in result) {
+    res.status(409).json({ error: "That member no longer has active access" });
+    return;
+  }
+  res.json(memberView(result.member));
 });
 
 router.get("/activity", requireRole("super_admin", "admin"), async (req, res): Promise<void> => {

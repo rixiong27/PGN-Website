@@ -7,6 +7,7 @@
  */
 import type { AdminVote } from './adminVote';
 import type { VoteResultMyChoice } from './voteResultMyChoice';
+import type { VoteResultStatus } from './voteResultStatus';
 
 export interface VoteResult {
   pnmId: number;
@@ -23,5 +24,6 @@ export interface VoteResult {
   notVotedPercentage?: number;
   /** @nullable */
   myChoice?: VoteResultMyChoice;
+  status: VoteResultStatus;
   votes?: AdminVote[];
 }
