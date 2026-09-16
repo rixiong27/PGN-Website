@@ -8,6 +8,7 @@
     "build": "node ./build.mjs",
     "start": "node --enable-source-maps ./dist/index.mjs",
     "test": "tsx --test test/**/*.test.ts",
+    "test:storage-provider": "RUN_OBJECT_STORAGE_INTEGRATION=1 tsx --test test/object-storage-provider.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
