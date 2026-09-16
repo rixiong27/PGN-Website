@@ -208,6 +208,99 @@ test("a save blocks cleanup, which preserves the newly committed attachment", { 
   });
 });
 
+test("cleanup lock timeout rolls back while a save retains its photo and recovers on retry", { timeout: 15_000 }, async () => {
+  await scenario(async ({ a, b, aPid, bPid, hold, track }) => {
+    const { objects, state } = await storage();
+    const written = gate();
+    const save = track(withPhotoWrite(database(a), path, async (client, savedPath) => {
+      await client.query("INSERT INTO pgn_pnms VALUES (1, $1)", [savedPath]);
+      written.open();
+      await hold.promise;
+    }, objects));
+    await reached(save, written);
+    const cleanup = track(cleanupPhotos(database(b), objects, now));
+    await waitForBlocked(a, bPid, aPid, "ShareRowExclusiveLock");
+    // Exercise the production SET LOCAL lock_timeout, not a mocked query error.
+    await assert.rejects(cleanup, (error: any) => {
+      assert.equal(error.code, "55P03");
+      assert.match(error.message, /lock timeout/);
+      return true;
+    });
+    assert.equal(state.attempts, 0);
+    assert.equal(state.exists, true);
+    assert.equal(state.finalized, true);
+    // This query would fail with 25P02 if cleanup left its transaction aborted.
+    assert.equal((await b.query("SELECT * FROM pgn_pnms")).rowCount, 0);
+    assert.equal((await a.query(
+      "SELECT 1 FROM pg_locks WHERE pid = $1 AND relation = 'pgn_pnms'::regclass",
+      [bPid],
+    )).rowCount, 0);
+    assert.equal((await a.query("SELECT photo_path FROM pgn_pnms")).rows[0].photo_path, finalizedPath);
+    hold.open();
+    await save;
+    // Reuse the failed cleanup connection for an actual photo save.
+    await withPhotoWrite(database(b), path, (client, savedPath) =>
+      client.query("INSERT INTO pgn_pnms VALUES (2, $1)", [savedPath]), objects);
+    assert.deepEqual(await cleanupPhotos(database(b), objects, now), { deleted: 1 });
+    assert.deepEqual(await cleanupPhotos(database(a), objects, now), { deleted: 1 });
+    assert.equal(state.removals, 1);
+    assert.equal(state.finalized, true);
+    assert.deepEqual((await b.query("SELECT photo_path FROM pgn_pnms ORDER BY id")).rows,
+      [{ photo_path: finalizedPath }, { photo_path: finalizedPath }]);
+  });
+});
+
+test("storage deletion rejection rolls back and releases a waiting photo save", { timeout: 15_000 }, async () => {
+  await scenario(async ({ a, b, aPid, bPid, hold, track }) => {
+    const { objects, state } = await storage();
+    const deleting = gate();
+    const failure = new Error("Injected storage deletion failure");
+    let failedDeletes = 0;
+    const cleanup = track(cleanupPhotos(database(a), {
+      async *listPhotoUploads() {
+        for await (const file of objects!.listPhotoUploads()) {
+          yield { ...file, async delete() {
+            failedDeletes++;
+            deleting.open();
+            await hold.promise;
+            throw failure;
+          } };
+        }
+      },
+    }, now));
+    await reached(cleanup, deleting);
+    let writeCalled = false;
+    const save = track(withPhotoWrite(database(b), path, async (client, savedPath) => {
+      writeCalled = true;
+      await client.query("INSERT INTO pgn_pnms VALUES (1, $1)", [savedPath]);
+    }, objects));
+    await waitForBlocked(a, bPid, aPid, "ShareRowExclusiveLock");
+    assert.equal(state.validations, 0);
+    assert.equal(writeCalled, false);
+    hold.open();
+    await assert.rejects(cleanup, error => error === failure);
+    await save; // Cannot finish if the failed cleanup still owns the table lock.
+    assert.equal(failedDeletes, 1);
+    assert.equal(state.removals, 0);
+    assert.equal(state.exists, true);
+    assert.equal(state.finalized, true);
+    assert.equal(writeCalled, true);
+    assert.equal((await a.query("SELECT photo_path FROM pgn_pnms")).rows[0].photo_path, finalizedPath);
+    assert.equal((await b.query(
+      "SELECT 1 FROM pg_locks WHERE pid = $1 AND relation = 'pgn_pnms'::regclass",
+      [aPid],
+    )).rowCount, 0);
+    await withPhotoWrite(database(a), path, (client, savedPath) =>
+      client.query("INSERT INTO pgn_pnms VALUES (2, $1)", [savedPath]), objects);
+    assert.deepEqual(await cleanupPhotos(database(a), objects, now), { deleted: 1 });
+    assert.deepEqual(await cleanupPhotos(database(b), objects, now), { deleted: 1 });
+    assert.equal(state.removals, 1);
+    assert.equal(state.finalized, true);
+    assert.deepEqual((await a.query("SELECT photo_path FROM pgn_pnms ORDER BY id")).rows,
+      [{ photo_path: finalizedPath }, { photo_path: finalizedPath }]);
+  });
+});
+
 test("an attachment waits for cleanup, then rejects its deleted path without committing", { timeout: 15_000 }, async () => {
   await scenario(async ({ a, b, aPid, bPid, hold, track }) => {
     const { objects, state } = await storage();
