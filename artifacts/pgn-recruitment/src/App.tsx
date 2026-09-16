@@ -365,7 +365,7 @@ function AppShell({ children }: { children: ReactNode }) {
   const [location] = useLocation();
   const current = navGroups.flatMap((group) => group.items).find((item) => location === item.href);
   return (
-    <div className="app-shell">
+    <div className="app-shell" data-testid="protected-route" data-route={location}>
       <Sidebar user={user} open={menuOpen} onClose={() => setMenuOpen(false)} />
       <div className="main-wrap">
         <header className="topbar">
@@ -506,7 +506,7 @@ function PendingAccess() {
 function ProtectedRoute({ children }: { children: ReactNode }) {
   const { isLoaded, isSignedIn } = useAuth();
   const { data: user, isLoading, isError } = useGetMe({ query: { enabled: isLoaded && Boolean(isSignedIn), retry: false, queryKey: getGetMeQueryKey() } });
-  if (!isLoaded || (isSignedIn && isLoading)) return <div className="auth-shell" />;
+  if (!isLoaded || (isSignedIn && isLoading)) return <div className="auth-shell" data-testid="auth-loading-state" />;
   if (!isSignedIn) return <Redirect to="/" />;
   if (isError) return <Redirect to="/join" />;
   if (user?.status === 'pending') return <PendingAccess />;
@@ -832,7 +832,7 @@ function ActivityPage() {
 }
 
 function NotFound() {
-  return <div style={{ minHeight: '70vh', display: 'grid', placeItems: 'center', textAlign: 'center' }}><div><div className="eyebrow">404 / Not found</div><h1 className="page-title">This page moved.</h1><p className="page-subtitle" style={{ marginBottom: 20 }}>The workspace could not find that route.</p><Link href="/dashboard" className="btn btn-primary" data-testid="link-not-found-dashboard">Return to overview <ArrowRight size={14} /></Link></div></div>;
+  return <div data-testid="route-not-found" style={{ minHeight: '70vh', display: 'grid', placeItems: 'center', textAlign: 'center' }}><div><div className="eyebrow">404 / Not found</div><h1 className="page-title">This page moved.</h1><p className="page-subtitle" style={{ marginBottom: 20 }}>The workspace could not find that route.</p><Link href="/dashboard" className="btn btn-primary" data-testid="link-not-found-dashboard">Return to overview <ArrowRight size={14} /></Link></div></div>;
 }
 
 function RoutedErrorBoundary({ children }: { children: ReactNode }) {

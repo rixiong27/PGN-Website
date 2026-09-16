@@ -10,7 +10,7 @@ test('does not sign out or clear session data as part of app startup', () => {
 });
 
 test('waits for Clerk and member authorization before rendering protected routes', () => {
-  assert.match(appSource, /if \(!isLoaded \|\| \(isSignedIn && isLoading\)\) return <div className="auth-shell" \/>;/);
+  assert.match(appSource, /if \(!isLoaded \|\| \(isSignedIn && isLoading\)\) return <div className="auth-shell" data-testid="auth-loading-state" \/>;/);
   assert.match(appSource, /if \(!isSignedIn\) return <Redirect to="\/" \/>;/);
   assert.match(appSource, /if \(isError\) return <Redirect to="\/join" \/>;/);
 });
