@@ -47,6 +47,26 @@ export const ValidateInviteResponse = zod.object({
 
 
 /**
+ * @summary Join the chapter with an invite code
+ */
+
+
+
+export const JoinChapterBody = zod.object({
+  "code": zod.string().min(1)
+})
+
+export const JoinChapterResponse = zod.object({
+  "id": zod.number().int(),
+  "name": zod.string(),
+  "email": zod.string().email(),
+  "role": zod.enum(['super_admin', 'admin', 'member', 'pending']),
+  "status": zod.enum(['pending', 'active', 'rejected']),
+  "createdAt": zod.coerce.date()
+})
+
+
+/**
  * @summary Get dashboard totals and outstanding votes
  */
 export const GetDashboardResponse = zod.object({

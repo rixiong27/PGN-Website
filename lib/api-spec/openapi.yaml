@@ -72,6 +72,24 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/InviteValidation"
+  /access/join:
+    post:
+      operationId: joinChapter
+      tags: [access]
+      summary: Join the chapter with an invite code
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InviteInput"
+      responses:
+        "201":
+          description: Chapter membership request created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Member"
   /dashboard:
     get:
       operationId: getDashboard

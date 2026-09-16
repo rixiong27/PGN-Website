@@ -48,6 +48,7 @@ import {
   useGetPnm,
   useGetVotingRound,
   useImportPnms,
+  useJoinChapter,
   useListActivity,
   useListNotes,
   useListPendingApprovals,
@@ -58,7 +59,6 @@ import {
   useToggleNotePin,
   useUpdatePnm,
   useUpdateUserRole,
-  useValidateInvite,
   type Member,
   type Pnm,
   type PipelineStatus,
@@ -363,36 +363,49 @@ function SignInPage() {
 }
 
 function SignUpPage() {
-  const [verified, setVerified] = useState(false);
-  const [invite, setInvite] = useState('');
-  const [error, setError] = useState('');
-  const validateInvite = useValidateInvite();
-  const verify = (event: React.FormEvent) => {
-    event.preventDefault();
-    setError('');
-    validateInvite.mutate({ data: { code: invite.trim() } }, {
-      onSuccess: (result) => result.valid ? setVerified(true) : setError('That invite code is not valid. Ask a chapter admin for a new one.'),
-      onError: () => setError('We could not validate that invite. Try again.'),
-    });
-  };
-  if (!verified) {
-    return (
-      <div className="auth-shell">
-        <div className="auth-visual"><Logo dark /><div className="auth-statement"><div className="eyebrow" style={{ color: 'hsl(0 72% 68%)' }}>Phi Gamma Nu · Virginia Tech</div><h1>Join VT PGN.</h1><p>Enter the invite shared by chapter leadership to join the chapter.</p></div><div className="auth-footer">PRIVATE CHAPTER OPERATIONS / MEMBERS ONLY</div></div>
-        <div className="auth-panel"><div className="auth-card" style={{ background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: 14, padding: 26 }}>
-          <div className="eyebrow">Join VT PGN</div><h2 style={{ marginTop: 8 }}>Enter your invite.</h2><p className="auth-help">After the code is accepted, create your vt.edu account to join the Virginia Tech chapter.</p>
-          <form className="auth-form" onSubmit={verify}><div className="field"><label className="field-label" htmlFor="auth-invite">Invite code</label><input id="auth-invite" className="input" required value={invite} onChange={(event) => setInvite(event.target.value)} placeholder="PGN-XXXX" data-testid="input-invite-code" /></div>{error ? <div className="error-state" style={{ padding: 11 }}>{error}</div> : null}<button className="btn btn-primary" type="submit" disabled={validateInvite.isPending}>{validateInvite.isPending ? 'Checking invite…' : 'Continue'} <ArrowRight size={14} /></button></form>
-          <div style={{ textAlign: 'center', marginTop: 22, fontSize: 12, color: 'hsl(var(--muted-foreground))' }}>Already have an account? <Link href="/sign-in" className="section-link">Sign in</Link></div>
-        </div></div>
-      </div>
-    );
-  }
+  const { isLoaded, isSignedIn } = useAuth();
+  if (isLoaded && isSignedIn) return <Redirect to="/join" />;
   return (
     <div className="auth-shell">
-      <div className="auth-visual"><Logo dark /><div className="auth-statement"><div className="eyebrow" style={{ color: 'hsl(0 72% 68%)' }}>Phi Gamma Nu · Virginia Tech</div><h1>Join VT PGN.</h1><p>Use your vt.edu email to create your chapter account.</p></div><div className="auth-footer">PRIVATE CHAPTER OPERATIONS / MEMBERS ONLY</div></div>
+      <div className="auth-visual"><Logo dark /><div className="auth-statement"><div className="eyebrow" style={{ color: 'hsl(0 72% 68%)' }}>Step 1 of 2 · Create account</div><h1>Create your account.</h1><p>Use your vt.edu email first. You’ll join the VT PGN chapter with its code in the next step.</p></div><div className="auth-footer">VIRGINIA TECH ACCOUNTS ONLY</div></div>
       <div className="auth-panel">
         <SignUp routing="path" path={`${basePath}/sign-up`} signInUrl={`${basePath}/sign-in`} appearance={clerkAppearance} />
       </div>
+    </div>
+  );
+}
+
+function JoinChapterPage() {
+  const { isLoaded, isSignedIn } = useAuth();
+  const { signOut } = useClerk();
+  const [, setLocation] = useLocation();
+  const queryClient = useQueryClient();
+  const [code, setCode] = useState('');
+  const [error, setError] = useState('');
+  const joinChapter = useJoinChapter();
+  const { data: existingMember } = useGetMe({ query: { enabled: isLoaded && Boolean(isSignedIn), retry: false, queryKey: getGetMeQueryKey() } });
+  if (!isLoaded) return <div className="auth-shell" />;
+  if (!isSignedIn) return <Redirect to="/sign-up" />;
+  if (existingMember) return <Redirect to="/dashboard" />;
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    setError('');
+    joinChapter.mutate({ data: { code: code.trim() } }, {
+      onSuccess: (member) => {
+        queryClient.setQueryData(getGetMeQueryKey(), member);
+        setLocation('/dashboard');
+      },
+      onError: () => setError('That chapter code is not valid. Check it and try again.'),
+    });
+  };
+  return (
+    <div className="auth-shell">
+      <div className="auth-visual"><Logo dark /><div className="auth-statement"><div className="eyebrow" style={{ color: 'hsl(0 72% 68%)' }}>Step 2 of 2 · Join chapter</div><h1>Join VT PGN.</h1><p>Your account is ready. Enter the chapter code to connect it to Phi Gamma Nu at Virginia Tech.</p></div><div className="auth-footer">PRIVATE CHAPTER OPERATIONS / FALL 2026</div></div>
+      <div className="auth-panel"><div className="auth-card" style={{ background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: 14, padding: 26 }}>
+        <div className="eyebrow">Join VT PGN</div><h2 style={{ marginTop: 8 }}>Enter the chapter code.</h2><p className="auth-help">This is the final step before your membership request is sent to chapter leadership.</p>
+        <form className="auth-form" onSubmit={submit}><div className="field"><label className="field-label" htmlFor="chapter-code">Chapter code</label><input id="chapter-code" className="input" required value={code} onChange={(event) => setCode(event.target.value)} placeholder="PGN-1234" autoComplete="off" data-testid="input-chapter-code" /></div>{error ? <div className="error-state" style={{ padding: 11 }}>{error}</div> : null}<button className="btn btn-primary" type="submit" disabled={joinChapter.isPending}>{joinChapter.isPending ? 'Joining…' : 'Join the chapter'} <ArrowRight size={14} /></button></form>
+        <button className="btn btn-ghost" style={{ width: '100%', marginTop: 12 }} onClick={() => void signOut({ redirectUrl: `${basePath}/sign-up` })}>Use a different account</button>
+      </div></div>
     </div>
   );
 }
@@ -410,9 +423,10 @@ function PendingAccess() {
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
   const { isLoaded, isSignedIn } = useAuth();
-  const { data: user, isLoading } = useGetMe({ query: { enabled: isLoaded && Boolean(isSignedIn), queryKey: getGetMeQueryKey() } });
+  const { data: user, isLoading, isError } = useGetMe({ query: { enabled: isLoaded && Boolean(isSignedIn), retry: false, queryKey: getGetMeQueryKey() } });
   if (!isLoaded || (isSignedIn && isLoading)) return <div className="auth-shell" />;
   if (!isSignedIn) return <Redirect to="/" />;
+  if (isError) return <Redirect to="/join" />;
   if (user?.status === 'pending') return <PendingAccess />;
   return <>{children}</>;
 }
@@ -544,12 +558,12 @@ function RoutedErrorBoundary({ children }: { children: ReactNode }) {
 }
 
 function Router() {
-  return <RoutedErrorBoundary><Switch><Route path="/" component={HomeRedirect} /><Route path="/sign-in/*?" component={SignInPage} /><Route path="/sign-up/*?" component={SignUpPage} /><Route path="/dashboard"><ProtectedRoute><AppShell><Dashboard /></AppShell></ProtectedRoute></Route><Route path="/roster"><ProtectedRoute><AppShell><Roster /></AppShell></ProtectedRoute></Route><Route path="/pnms/:id"><ProtectedRoute><AppShell><Profile /></AppShell></ProtectedRoute></Route><Route path="/voting"><ProtectedRoute><AppShell><Voting /></AppShell></ProtectedRoute></Route><Route path="/archive"><ProtectedRoute><AppShell><ArchivePage /></AppShell></ProtectedRoute></Route><Route path="/approvals"><ProtectedRoute><AppShell><Approvals /></AppShell></ProtectedRoute></Route><Route path="/members"><ProtectedRoute><AppShell><Members /></AppShell></ProtectedRoute></Route><Route path="/activity"><ProtectedRoute><AppShell><ActivityPage /></AppShell></ProtectedRoute></Route><Route component={NotFound} /></Switch></RoutedErrorBoundary>;
+  return <RoutedErrorBoundary><Switch><Route path="/" component={HomeRedirect} /><Route path="/sign-in/*?" component={SignInPage} /><Route path="/sign-up/*?" component={SignUpPage} /><Route path="/join" component={JoinChapterPage} /><Route path="/dashboard"><ProtectedRoute><AppShell><Dashboard /></AppShell></ProtectedRoute></Route><Route path="/roster"><ProtectedRoute><AppShell><Roster /></AppShell></ProtectedRoute></Route><Route path="/pnms/:id"><ProtectedRoute><AppShell><Profile /></AppShell></ProtectedRoute></Route><Route path="/voting"><ProtectedRoute><AppShell><Voting /></AppShell></ProtectedRoute></Route><Route path="/archive"><ProtectedRoute><AppShell><ArchivePage /></AppShell></ProtectedRoute></Route><Route path="/approvals"><ProtectedRoute><AppShell><Approvals /></AppShell></ProtectedRoute></Route><Route path="/members"><ProtectedRoute><AppShell><Members /></AppShell></ProtectedRoute></Route><Route path="/activity"><ProtectedRoute><AppShell><ActivityPage /></AppShell></ProtectedRoute></Route><Route component={NotFound} /></Switch></RoutedErrorBoundary>;
 }
 
 function ClerkApp() {
   const [, setLocation] = useLocation();
-  return <ClerkProvider publishableKey={clerkPubKey} proxyUrl={clerkProxyUrl} appearance={clerkAppearance} signInUrl={`${basePath}/sign-in`} signUpUrl={`${basePath}/sign-up`} localization={{ signIn: { start: { title: 'Welcome back', subtitle: 'Sign in to your VT PGN chapter workspace' } }, signUp: { start: { title: 'Join VT PGN', subtitle: 'Create your Virginia Tech chapter account' } } }} routerPush={(to) => setLocation(stripBase(to))} routerReplace={(to) => setLocation(stripBase(to))}><QueryClientProvider client={queryClient}><TooltipProvider><Router /><Toaster /></TooltipProvider></QueryClientProvider></ClerkProvider>;
+  return <ClerkProvider publishableKey={clerkPubKey} proxyUrl={clerkProxyUrl} appearance={clerkAppearance} signInUrl={`${basePath}/sign-in`} signUpUrl={`${basePath}/sign-up`} localization={{ signIn: { start: { title: 'Welcome back', subtitle: 'Sign in to your VT PGN chapter workspace' } }, signUp: { start: { title: 'Create your account', subtitle: 'Step 1 of 2 · Use your vt.edu email' } } }} routerPush={(to) => setLocation(stripBase(to))} routerReplace={(to) => setLocation(stripBase(to))}><QueryClientProvider client={queryClient}><TooltipProvider><Router /><Toaster /></TooltipProvider></QueryClientProvider></ClerkProvider>;
 }
 
 function App() {

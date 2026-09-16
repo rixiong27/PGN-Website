@@ -15,6 +15,7 @@ import {
   GetPnmParams,
   GetVotingRoundParams,
   ImportPnmsBody,
+  JoinChapterBody,
   ListActivityQueryParams,
   ListNotesParams,
   ListPnmsQueryParams,
@@ -77,37 +78,12 @@ async function ensureMember(req: AuthedRequest, res: Response, next: NextFunctio
     res.status(401).json({ error: "Sign in required" });
     return;
   }
-  const claims = (auth.sessionClaims ?? {}) as Record<string, unknown>;
-  const email = asString(claims.email ?? claims.email_address).toLowerCase() || `${clerkId}@vt.edu`;
-  if (!email.endsWith("@vt.edu")) {
-    res.status(403).json({ error: "A vt.edu email address is required" });
-    return;
-  }
-
-  const name = asString(claims.name ?? claims.full_name) || email.split("@")[0];
   const existing = await pool.query<MemberRow>("SELECT * FROM pgn_users WHERE clerk_id = $1", [clerkId]);
   if (existing.rows[0]) {
     req.member = existing.rows[0];
   } else {
-    const preapproved = await pool.query<MemberRow>(
-      "SELECT * FROM pgn_users WHERE lower(email) = $1 AND clerk_id LIKE 'preapproved:%' AND status = 'active'",
-      [email],
-    );
-    if (preapproved.rows[0]) {
-      const linked = await pool.query<MemberRow>(
-        "UPDATE pgn_users SET clerk_id=$1, name=$2 WHERE id=$3 RETURNING *",
-        [clerkId, name, preapproved.rows[0].id],
-      );
-      req.member = linked.rows[0];
-    } else {
-      const count = await pool.query<{ count: string }>("SELECT COUNT(*)::text AS count FROM pgn_users");
-      const isFirst = Number(count.rows[0]?.count ?? 0) === 0;
-      const inserted = await pool.query<MemberRow>(
-        "INSERT INTO pgn_users (clerk_id, name, email, role, status) VALUES ($1, $2, $3, $4, $5) RETURNING *",
-        [clerkId, name, email, isFirst ? "super_admin" : "pending", isFirst ? "active" : "pending"],
-      );
-      req.member = inserted.rows[0];
-    }
+    res.status(403).json({ error: "Join the VT PGN chapter before accessing the workspace" });
+    return;
   }
   next();
 }
@@ -144,6 +120,64 @@ router.post("/access/invite", async (req, res): Promise<void> => {
   }
   const result = await pool.query("SELECT label FROM pgn_invites WHERE code = $1 AND active = true", [parsed.data.code.trim()]);
   res.json({ valid: Boolean(result.rows[0]), label: result.rows[0]?.label ?? null });
+});
+
+router.post("/access/join", async (req, res): Promise<void> => {
+  const auth = getAuth(req);
+  const clerkId = auth.userId;
+  if (!clerkId) {
+    res.status(401).json({ error: "Create or sign in to your account first" });
+    return;
+  }
+  const claims = (auth.sessionClaims ?? {}) as Record<string, unknown>;
+  const email = asString(claims.email ?? claims.email_address).toLowerCase();
+  if (!email.endsWith("@vt.edu")) {
+    res.status(403).json({ error: "A vt.edu email address is required" });
+    return;
+  }
+  const parsed = JoinChapterBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Enter the chapter code" });
+    return;
+  }
+  const invite = await pool.query(
+    "SELECT label FROM pgn_invites WHERE code = $1 AND active = true",
+    [parsed.data.code.trim()],
+  );
+  if (!invite.rows[0]) {
+    res.status(403).json({ error: "That chapter code is not valid" });
+    return;
+  }
+  const current = await pool.query<MemberRow>("SELECT * FROM pgn_users WHERE clerk_id = $1", [clerkId]);
+  if (current.rows[0]) {
+    res.status(201).json(memberView(current.rows[0]));
+    return;
+  }
+  const name = asString(claims.name ?? claims.full_name) || email.split("@")[0];
+  const preapproved = await pool.query<MemberRow>(
+    "SELECT * FROM pgn_users WHERE lower(email) = $1 AND clerk_id LIKE 'preapproved:%' AND status = 'active'",
+    [email],
+  );
+  if (preapproved.rows[0]) {
+    const linked = await pool.query<MemberRow>(
+      "UPDATE pgn_users SET clerk_id=$1, name=$2 WHERE id=$3 RETURNING *",
+      [clerkId, name, preapproved.rows[0].id],
+    );
+    res.status(201).json(memberView(linked.rows[0]));
+    return;
+  }
+  const duplicateEmail = await pool.query("SELECT id FROM pgn_users WHERE lower(email) = $1", [email]);
+  if (duplicateEmail.rows[0]) {
+    res.status(409).json({ error: "This vt.edu email is already linked to another account" });
+    return;
+  }
+  const count = await pool.query<{ count: string }>("SELECT COUNT(*)::text AS count FROM pgn_users");
+  const isFirst = Number(count.rows[0]?.count ?? 0) === 0;
+  const inserted = await pool.query<MemberRow>(
+    "INSERT INTO pgn_users (clerk_id, name, email, role, status) VALUES ($1, $2, $3, $4, $5) RETURNING *",
+    [clerkId, name, email, isFirst ? "super_admin" : "pending", isFirst ? "active" : "pending"],
+  );
+  res.status(201).json(memberView(inserted.rows[0]));
 });
 
 router.use(ensureMember);
