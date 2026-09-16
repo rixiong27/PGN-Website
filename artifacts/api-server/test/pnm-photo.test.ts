@@ -31,7 +31,13 @@ async function fixture(run: (h: {
   let file = photoFile(await imageBytes());
   const calls = { uploads: 0, reads: [] as string[], downloads: 0, queries: 0 };
   const stored = new Map<number, Record<string, unknown>>();
-  const auth = (req: Request) => ({ userId: req.header("x-test-user") ?? null });
+  const auth = (req: Request) => {
+    const userId = req.header("x-test-user") ?? null;
+    return {
+      userId,
+      sessionClaims: userId ? { email: `${userId}@example.com` } : undefined,
+    };
+  };
   const pool = {
     async connect() { return { query: pool.query, release() {} }; },
     async query(sql: string, values: unknown[] = []) {

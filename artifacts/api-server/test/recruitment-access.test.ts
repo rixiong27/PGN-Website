@@ -41,6 +41,11 @@ const fakePool = {
       return { rows: (invite ? [{ label: invite.label }] : []) as T[] };
     }
 
+    if (sql === "SELECT * FROM pgn_users WHERE clerk_id = $1") {
+      const member = state.users.find((item) => item.clerk_id === values[0]);
+      return { rows: (member ? [copyMember(member)] : []) as T[] };
+    }
+
     if (sql.includes("FROM pgn_users WHERE clerk_id = $1 OR")) {
       const [clerkId, email] = values as [string, string];
       const member = state.users.find((item) => item.clerk_id === clerkId || (item.email === email && item.clerk_id.startsWith("preapproved:")));
@@ -62,6 +67,11 @@ const fakePool = {
     if (sql.startsWith("SELECT * FROM pgn_users WHERE lower(email)")) {
       const member = state.users.find((item) => item.email === values[0]);
       return { rows: (member ? [copyMember(member)] : []) as T[] };
+    }
+
+    if (sql.startsWith("SELECT id FROM pgn_users WHERE lower(email)")) {
+      const member = state.users.find((item) => item.email === values[0]);
+      return { rows: (member ? [{ id: member.id }] : []) as T[] };
     }
 
     if (sql.startsWith("INSERT INTO pgn_users")) {
@@ -133,16 +143,53 @@ test("validates active and invalid invite codes without requiring sign-in", asyn
   assert.deepEqual(invalid.body, { valid: false, label: null });
 });
 
-test("rejects non-vt.edu sessions before touching member access", async () => {
+test("allows any verified email domain to join and keeps chapter approval pending", async () => {
+  state.users.push({
+    id: state.nextId++,
+    clerk_id: "clerk-admin",
+    name: "Chapter Admin",
+    email: "admin@vt.edu",
+    role: "admin",
+    status: "active",
+    created_at: new Date("2026-09-16T12:00:00.000Z"),
+  });
+  state.invites.push({ code: "PGN-VALID", label: "Fall 2026", active: true });
   authByUser.outsider = {
     userId: "clerk-outsider",
     sessionClaims: { email: "outsider@example.com", name: "Outside User" },
   };
 
-  const response = await request(buildApp(), "GET", "/me", undefined, "outsider");
+  const app = buildApp();
+  const joined = await request(app, "POST", "/access/join", { code: "PGN-VALID" }, "outsider");
+  assert.equal(joined.status, 201);
+  assert.equal(joined.body.email, "outsider@example.com");
+  assert.equal(joined.body.role, "pending");
+  assert.equal(joined.body.status, "pending");
+
+  const access = await request(app, "GET", "/me", undefined, "outsider");
+  assert.equal(access.status, 200);
+  assert.equal(access.body.email, "outsider@example.com");
+  assert.equal(access.body.status, "pending");
+});
+
+test("members cannot delete PNMs", async () => {
+  state.users.push({
+    id: state.nextId++,
+    clerk_id: "clerk-member",
+    name: "Chapter Member",
+    email: "member@example.com",
+    role: "member",
+    status: "active",
+    created_at: new Date("2026-09-16T12:00:00.000Z"),
+  });
+  authByUser.member = {
+    userId: "clerk-member",
+    sessionClaims: { email: "member@example.com", name: "Chapter Member" },
+  };
+
+  const response = await request(buildApp(), "DELETE", "/pnms/10", undefined, "member");
   assert.equal(response.status, 403);
-  assert.deepEqual(response.body, { error: "A vt.edu email address is required" });
-  assert.equal(state.users.length, 0);
+  assert.deepEqual(response.body, { error: "You do not have permission to do that" });
 });
 
 test("returns 401 for signed-out protected routes", async () => {
@@ -196,15 +243,15 @@ test("links an admin pre-approved member to Clerk on the first authenticated req
   };
   authByUser.newMember = {
     userId: "clerk-member",
-    sessionClaims: { email: "newmember@vt.edu", name: "New Member" },
+    sessionClaims: { email: "newmember@example.com", name: "New Member" },
   };
   const app = buildApp();
 
-  const preapproved = await request(app, "POST", "/users", { name: "New Member", email: "newmember@vt.edu" }, "admin");
+  const preapproved = await request(app, "POST", "/users", { name: "New Member", email: "newmember@example.com" }, "admin");
   assert.equal(preapproved.status, 201);
   assert.equal(preapproved.body.role, "member");
   assert.equal(preapproved.body.status, "active");
-  assert.equal(state.users[1]?.clerk_id, "preapproved:newmember@vt.edu");
+  assert.equal(state.users[1]?.clerk_id, "preapproved:newmember@example.com");
 
   const firstAuthenticatedRequest = await request(app, "GET", "/me", undefined, "newMember");
   assert.equal(firstAuthenticatedRequest.status, 200);

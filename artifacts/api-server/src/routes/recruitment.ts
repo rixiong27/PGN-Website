@@ -213,9 +213,9 @@ async function ensureMember(req: AuthedRequest, res: Response, next: NextFunctio
     return;
   }
   const claims = (auth.sessionClaims ?? {}) as Record<string, unknown>;
-  const email = asString(claims.email ?? claims.email_address).toLowerCase() || `${clerkId}@vt.edu`;
-  if (!email.endsWith("@vt.edu")) {
-    res.status(403).json({ error: "A vt.edu email address is required" });
+  const email = asString(claims.email ?? claims.email_address).trim().toLowerCase();
+  if (!email) {
+    res.status(403).json({ error: "A verified email address is required" });
     return;
   }
 
@@ -286,9 +286,9 @@ router.post("/access/join", async (req, res): Promise<void> => {
     return;
   }
   const claims = (auth.sessionClaims ?? {}) as Record<string, unknown>;
-  const email = asString(claims.email ?? claims.email_address).toLowerCase();
-  if (!email.endsWith("@vt.edu")) {
-    res.status(403).json({ error: "A vt.edu email address is required" });
+  const email = asString(claims.email ?? claims.email_address).trim().toLowerCase();
+  if (!email) {
+    res.status(403).json({ error: "A verified email address is required" });
     return;
   }
   const parsed = JoinChapterBody.safeParse(req.body);
@@ -324,7 +324,7 @@ router.post("/access/join", async (req, res): Promise<void> => {
   }
   const duplicateEmail = await activePool.query("SELECT id FROM pgn_users WHERE lower(email) = $1", [email]);
   if (duplicateEmail.rows[0]) {
-    res.status(409).json({ error: "This vt.edu email is already linked to another account" });
+    res.status(409).json({ error: "This email is already linked to another account" });
     return;
   }
   const count = await activePool.query<{ count: string }>("SELECT COUNT(*)::text AS count FROM pgn_users");
@@ -495,7 +495,27 @@ router.patch("/pnms/:id", requireRole("super_admin", "admin"), async (req: Authe
 router.delete("/pnms/:id", requireRole("super_admin", "admin"), async (req: AuthedRequest, res): Promise<void> => {
   const params = DeletePnmParams.safeParse(req.params);
   if (!params.success) { res.status(400).json({ error: params.error.message }); return; }
-  const deleted = await activePool.query("DELETE FROM pgn_pnms WHERE id = $1 RETURNING first_name, last_name", [params.data.id]);
+  let deleted;
+  try {
+    deleted = await withTransaction(async (client) => {
+      const result = await client.query(
+        "DELETE FROM pgn_pnms WHERE id = $1 RETURNING first_name, last_name",
+        [params.data.id],
+      );
+      if (result.rows[0]) {
+        await client.query("DELETE FROM pgn_notes WHERE pnm_id = $1", [params.data.id]);
+        await client.query("DELETE FROM pgn_votes WHERE pnm_id = $1", [params.data.id]);
+        await client.query(
+          "UPDATE pgn_voting_rounds SET pnm_ids = array_remove(pnm_ids, $1) WHERE $1 = ANY(pnm_ids)",
+          [params.data.id],
+        );
+      }
+      return result;
+    });
+  } catch {
+    res.status(500).json({ error: "The PNM could not be deleted. Try again." });
+    return;
+  }
   if (!deleted.rows[0]) { res.status(404).json({ error: "PNM not found" }); return; }
   await logActivity(req.member!, "Deleted PNM", `${deleted.rows[0].first_name} ${deleted.rows[0].last_name}`);
   res.status(204).send();
@@ -784,11 +804,6 @@ router.post("/users", requireRole("super_admin", "admin"), async (req: AuthedReq
 
   const name = parsed.data.name.trim();
   const email = parsed.data.email.trim().toLowerCase();
-  if (!email.endsWith("@vt.edu")) {
-    res.status(400).json({ error: "A vt.edu email address is required" });
-    return;
-  }
-
   const existing = await activePool.query<MemberRow>("SELECT * FROM pgn_users WHERE lower(email) = $1", [email]);
   if (existing.rows[0]) {
     res.status(409).json({ error: "A member with that email already exists" });
