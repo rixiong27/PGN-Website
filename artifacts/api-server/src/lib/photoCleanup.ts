@@ -10,19 +10,25 @@ export const PHOTO_GRACE_MS = 24 * 60 * 60 * 1000;
 export async function withPhotoWrite<T>(
   db: typeof pool,
   path: string | null | undefined,
-  write: (client: Pick<typeof pool, "query">) => Promise<T>,
-  objects: Pick<ObjectStorageService, "getObjectEntityFile"> = storage,
+  write: (client: Pick<typeof pool, "query">, savedPath: string | null | undefined) => Promise<T>,
+  objects: Pick<ObjectStorageService, "getObjectEntityFile" | "saveVerifiedPhoto"> = storage,
 ): Promise<T> {
   const client = await db.connect();
   try {
     await client.query("BEGIN");
     await client.query("LOCK TABLE pgn_pnms IN SHARE ROW EXCLUSIVE MODE");
+    let savedPath = path;
     if (path) {
-      if (!path.startsWith("/objects/uploads/")) throw new InvalidPhotoError("Invalid photo path");
+      if (!/^\/objects\/(uploads|photos)\/[a-zA-Z0-9-]+$/.test(path)) throw new InvalidPhotoError("Invalid photo path");
       const file = await objects.getObjectEntityFile(path);
-      await validatePhotoFile(file);
+      const photo = await validatePhotoFile(file);
+      if (path.startsWith("/objects/uploads/")) {
+        // Persist exactly the decoded buffer, never re-read the reusable PUT target.
+        // Failed/rolled-back saves leave orphans for delayed, reference-aware cleanup.
+        savedPath = await objects.saveVerifiedPhoto(photo);
+      }
     }
-    const result = await write(client);
+    const result = await write(client, savedPath);
     await client.query("COMMIT");
     return result;
   } catch (error) {

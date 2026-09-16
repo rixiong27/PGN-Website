@@ -1,5 +1,5 @@
 import { Readable } from 'stream';
-import { MAX_PHOTO_BYTES, PHOTO_CONTENT_TYPES } from '../lib/photoValidation';
+import { InvalidPhotoError, MAX_PHOTO_BYTES, PHOTO_CONTENT_TYPES, validatePhotoFile } from '../lib/photoValidation';
 import { getAuth as clerkGetAuth } from '@clerk/express';
 import {
   RequestUploadUrlBody,
@@ -163,6 +163,17 @@ router.get('/storage/objects/*path', async (req: Request, res: Response) => {
     const objectFile =
       await objectStorageService.getObjectEntityFile(objectPath);
 
+    // Upload previews and legacy attachments still point at mutable PUT targets.
+    // Never stream those unchecked or re-read them after validation.
+    if (objectPath.startsWith('/objects/uploads/')) {
+      const photo = await validatePhotoFile(objectFile);
+      res.setHeader('Content-Type', photo.contentType);
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.send(photo.bytes);
+      return;
+    }
+
     // --- Protected route example (uncomment when using replit-auth) ---
     // if (!req.isAuthenticated()) {
     //   res.status(401).json({ error: "Unauthorized" });
@@ -192,6 +203,10 @@ router.get('/storage/objects/*path', async (req: Request, res: Response) => {
       res.end();
     }
   } catch (error) {
+    if (error instanceof InvalidPhotoError) {
+      res.status(422).json({ error: 'Photo content is invalid' });
+      return;
+    }
     if (error instanceof ObjectNotFoundError) {
       req.log.warn({ err: error }, 'Object not found');
       res.status(404).json({ error: 'Object not found' });

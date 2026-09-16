@@ -24,12 +24,20 @@ type Identity = keyof typeof identities | "unknown";
 // SQL parameters, response mapping and streaming run for every request.
 async function fixture(run: (h: {
   request: (path: string, identity?: Identity, body?: unknown, method?: string) => Promise<Response>;
-  calls: { uploads: number; reads: string[]; downloads: number; queries: number };
+  calls: { uploads: number; reads: string[]; downloads: number; queries: number; finalizations: number };
   stored: Map<number, Record<string, unknown>>;
   setPhoto: (bytes: Buffer, type?: string, size?: number) => void;
+  setFinalizationHook: (hook: (photo: { bytes: Buffer; contentType: string }) => void | Promise<void>) => void;
+  validStagingBytes: Buffer;
 }) => Promise<void>) {
-  let file = photoFile(await imageBytes());
-  const calls = { uploads: 0, reads: [] as string[], downloads: 0, queries: 0 };
+  const validStagingBytes = await imageBytes();
+  const objectPath = "/objects/uploads/candidate-photo";
+  const finalized = new Map<string, { bytes: Buffer; contentType: string }>();
+  const filePaths = new WeakMap<object, string>();
+  let file = photoFile(validStagingBytes);
+  filePaths.set(file, objectPath);
+  let finalizationHook: ((photo: { bytes: Buffer; contentType: string }) => void | Promise<void>) | undefined;
+  const calls = { uploads: 0, reads: [] as string[], downloads: 0, queries: 0, finalizations: 0 };
   const stored = new Map<number, Record<string, unknown>>();
   const auth = (req: Request) => {
     const userId = req.header("x-test-user") ?? null;
@@ -78,14 +86,31 @@ async function fixture(run: (h: {
     normalizeObjectEntityPath(url: string) { assert.equal(url, uploadURL); return objectPath; },
     async getObjectEntityFile(path: string) {
       calls.reads.push(path);
-      if (path !== objectPath) throw new ObjectNotFoundError();
-      return file;
+      if (path === objectPath) return file;
+      const saved = finalized.get(path);
+      if (!saved) throw new ObjectNotFoundError();
+      const finalizedFile = photoFile(saved.bytes, saved.contentType);
+      filePaths.set(finalizedFile, path);
+      return finalizedFile;
+    },
+    async saveVerifiedPhoto(photo: { bytes: Buffer; contentType: string }) {
+      calls.finalizations++;
+      const finalPath = `/objects/photos/00000000-0000-4000-8000-${String(calls.finalizations).padStart(12, "0")}`;
+      const bytes = Buffer.from(photo.bytes);
+      await finalizationHook?.(photo);
+      finalized.set(finalPath, { bytes, contentType: photo.contentType });
+      return finalPath;
     },
     async searchPublicObject() { throw new Error("Unexpected public lookup"); },
-    async downloadObject() {
+    async downloadObject(objectFile: object) {
       calls.downloads++;
-      return new Response(new Uint8Array([137, 80, 78, 71]), {
-        headers: { "Content-Type": "image/png", "Cache-Control": "private, max-age=3600" },
+      const path = filePaths.get(objectFile);
+      const saved = path ? finalized.get(path) : undefined;
+      return new Response(saved?.bytes ?? new Uint8Array([137, 80, 78, 71]), {
+        headers: {
+          "Content-Type": saved?.contentType ?? "image/png",
+          "Cache-Control": "private, max-age=3600",
+        },
       });
     },
   };
@@ -103,6 +128,8 @@ async function fixture(run: (h: {
   assert.ok(address && typeof address !== "string");
   try {
     await run({ calls, stored, setPhoto: (bytes, type, size) => { file = photoFile(bytes, type, size); },
+      setFinalizationHook: hook => { finalizationHook = hook; },
+      validStagingBytes,
       request: (path, identity, body, method) =>
       fetch(`http://127.0.0.1:${address.port}${path}`, {
         method: method ?? (body === undefined ? "GET" : "POST"),
@@ -154,7 +181,7 @@ test("upload validation rejects invalid types, malformed metadata and files over
 });
 
 test("private photos require active membership and stream to members and admins", async () => {
-  await fixture(async ({ request, calls }) => {
+  await fixture(async ({ request, calls, setPhoto, validStagingBytes }) => {
     for (const identity of [undefined, "unknown", "pending", "rejected"] as const) {
       const res = await request(`/storage${objectPath}`, identity);
       assert.equal(res.status, identity ? 403 : 401);
@@ -165,12 +192,19 @@ test("private photos require active membership and stream to members and admins"
       const res = await request(`/storage${objectPath}`, identity);
       assert.equal(res.status, 200);
       assert.equal(res.headers.get("content-type"), "image/png");
-      assert.match(res.headers.get("cache-control")!, /private/);
-      assert.deepEqual([...new Uint8Array(await res.arrayBuffer())], [137, 80, 78, 71]);
+      assert.equal(res.headers.get("cache-control"), "private, no-store");
+      assert.equal(res.headers.get("x-content-type-options"), "nosniff");
+      assert.deepEqual(Buffer.from(await res.arrayBuffer()), validStagingBytes);
     }
     assert.deepEqual(calls.reads, [objectPath, objectPath, objectPath]);
+    setPhoto(Buffer.from("not an image"), "image/png");
+    const invalid = await request(`/storage${objectPath}`, "member");
+    assert.equal(invalid.status, 422);
+    assert.equal((await invalid.json()).error, "Photo content is invalid");
+    assert.equal(calls.downloads, 0);
+    assert.deepEqual(calls.reads, [objectPath, objectPath, objectPath, objectPath]);
     assert.equal((await request("/storage/objects/uploads/missing", "member")).status, 404);
-    assert.equal(calls.downloads, 3);
+    assert.equal(calls.downloads, 0);
   });
 });
 
@@ -178,13 +212,14 @@ test("profile photo path persists on create and edit and survives independent re
   await fixture(async ({ request, stored }) => {
     const upload = await request("/storage/uploads/request-url", "admin", metadata);
     assert.equal(upload.status, 200);
-    const { objectPath: returnedPath } = await upload.json();
-    const profile = { firstName: "Test", lastName: "Candidate", photoPath: returnedPath };
+    const { objectPath: stagingPath } = await upload.json();
+    const profile = { firstName: "Test", lastName: "Candidate", photoPath: stagingPath };
     const created = await request("/pnms", "admin", profile);
     assert.equal(created.status, 201);
     const { id, photoPath } = await created.json();
-    assert.equal(photoPath, returnedPath);
-    assert.equal(stored.get(id)?.photo_path, returnedPath);
+    assert.match(photoPath, /^\/objects\/photos\/[a-zA-Z0-9-]+$/);
+    assert.notEqual(photoPath, stagingPath);
+    assert.equal(stored.get(id)?.photo_path, photoPath);
     const reload = async (expected: string | null) => {
       const detail = await request(`/pnms/${id}`, "member");
       assert.equal(detail.status, 200);
@@ -193,17 +228,73 @@ test("profile photo path persists on create and edit and survives independent re
       assert.equal(list.status, 200);
       assert.equal((await list.json()).find((p: { id: number }) => p.id === id).photoPath, expected);
     };
-    await reload(returnedPath);
+    await reload(photoPath);
     const denied = await request(`/pnms/${id}`, "member", { ...profile, photoPath: null }, "PATCH");
     assert.equal(denied.status, 403);
-    assert.equal(stored.get(id)?.photo_path, returnedPath);
-    for (const path of [null, returnedPath]) {
-      const edited = await request(`/pnms/${id}`, "admin", { ...profile, photoPath: path }, "PATCH");
-      assert.equal(edited.status, 200);
-      assert.equal((await edited.json()).photoPath, path);
-      assert.equal(stored.get(id)?.photo_path, path);
-      await reload(path);
-    }
+    assert.equal(stored.get(id)?.photo_path, photoPath);
+    const edited = await request(`/pnms/${id}`, "admin", { ...profile, photoPath: stagingPath }, "PATCH");
+    assert.equal(edited.status, 200);
+    const editedPath = (await edited.json()).photoPath;
+    assert.match(editedPath, /^\/objects\/photos\/[a-zA-Z0-9-]+$/);
+    assert.notEqual(editedPath, stagingPath);
+    assert.equal(stored.get(id)?.photo_path, editedPath);
+    await reload(editedPath);
+    const removed = await request(`/pnms/${id}`, "admin", { ...profile, photoPath: null }, "PATCH");
+    assert.equal(removed.status, 200);
+    assert.equal((await removed.json()).photoPath, null);
+    assert.equal(stored.get(id)?.photo_path, null);
+    await reload(null);
+  });
+});
+
+test("replacing a reusable upload cannot change a member's finalized photo", async () => {
+  await fixture(async ({ request, setPhoto, validStagingBytes, stored }) => {
+    const upload = await request("/storage/uploads/request-url", "admin", metadata);
+    const { objectPath: stagingPath } = await upload.json();
+    setPhoto(validStagingBytes, "image/png");
+    const profile = { firstName: "Immutable", lastName: "Candidate", photoPath: stagingPath };
+    const created = await request("/pnms", "admin", profile);
+    assert.equal(created.status, 201);
+    const { id, photoPath: finalizedPath } = await created.json();
+    assert.match(finalizedPath, /^\/objects\/photos\/[a-zA-Z0-9-]+$/);
+    assert.equal(stored.get(id)?.photo_path, finalizedPath);
+
+    // Reusing the original PUT URL can replace only the staging object.
+    setPhoto(Buffer.from("not an image"), "image/png");
+    const failedReuse = await request(`/pnms/${id}`, "admin", profile, "PATCH");
+    assert.equal(failedReuse.status, 400);
+
+    const served = await request(`/storage${finalizedPath}`, "member");
+    assert.equal(served.status, 200);
+    assert.equal(served.headers.get("content-type"), "image/png");
+    assert.match(served.headers.get("cache-control")!, /private/);
+    assert.deepEqual(Buffer.from(await served.arrayBuffer()), validStagingBytes);
+  });
+});
+
+test("finalization persists the validated bytes when staging changes during save", async () => {
+  await fixture(async ({ request, setPhoto, setFinalizationHook, validStagingBytes }) => {
+    const upload = await request("/storage/uploads/request-url", "admin", metadata);
+    const { objectPath: stagingPath } = await upload.json();
+    setPhoto(validStagingBytes, "image/png");
+    let replaced = false;
+    setFinalizationHook(() => {
+      replaced = true;
+      setPhoto(Buffer.from("not an image"), "image/png");
+    });
+
+    const created = await request("/pnms", "admin", {
+      firstName: "Exact",
+      lastName: "Bytes",
+      photoPath: stagingPath,
+    });
+    assert.equal(created.status, 201);
+    const { photoPath: finalizedPath } = await created.json();
+    assert.equal(replaced, true);
+
+    const served = await request(`/storage${finalizedPath}`, "member");
+    assert.equal(served.status, 200);
+    assert.deepEqual(Buffer.from(await served.arrayBuffer()), validStagingBytes);
   });
 });
 

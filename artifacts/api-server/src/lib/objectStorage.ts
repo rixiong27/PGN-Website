@@ -41,24 +41,41 @@ export class ObjectNotFoundError extends Error {
 export class ObjectStorageService {
   constructor() {}
 
-  async *listPhotoUploads() {
+  /** Only the server writes here; no PUT URLs are ever minted for photos/. */
+  async saveVerifiedPhoto(photo: { bytes: Buffer; contentType: string }): Promise<string> {
+    const id = randomUUID();
     const { bucketName, objectName } = parseObjectPath(
-      `${this.getPrivateObjectDir().replace(/\/$/, '')}/uploads/`,
+      `${this.getPrivateObjectDir().replace(/\/$/, '')}/photos/${id}`,
     );
-    const stream = objectStorageClient.bucket(bucketName).getFilesStream({ prefix: objectName });
-    for await (const file of stream) {
-      const upload = file as File;
-      const suffix = upload.name.slice(objectName.length);
-      // Only objects minted by the upload endpoint; never other private assets.
-      if (!/^[0-9a-f-]{36}$/i.test(suffix)) continue;
-      yield {
-        objectPath: `/objects/uploads/${suffix}`,
-        metadata: upload.metadata,
-        delete: () => upload.delete({
-          ignoreNotFound: true,
-          ifGenerationMatch: upload.metadata.generation,
-        }),
-      };
+    await objectStorageClient.bucket(bucketName).file(objectName).save(photo.bytes, {
+      resumable: false,
+      validation: 'crc32c',
+      preconditionOpts: { ifGenerationMatch: 0 },
+      metadata: { contentType: photo.contentType },
+    });
+    return `/objects/photos/${id}`;
+  }
+
+  async *listPhotoUploads() {
+    for (const namespace of ['uploads', 'photos']) {
+      const { bucketName, objectName } = parseObjectPath(
+        `${this.getPrivateObjectDir().replace(/\/$/, '')}/${namespace}/`,
+      );
+      const stream = objectStorageClient.bucket(bucketName).getFilesStream({ prefix: objectName });
+      for await (const file of stream) {
+        const upload = file as File;
+        const suffix = upload.name.slice(objectName.length);
+        // Only minted uploads and finalized photos; never other private assets.
+        if (!/^[0-9a-f-]{36}$/i.test(suffix)) continue;
+        yield {
+          objectPath: `/objects/${namespace}/${suffix}`,
+          metadata: upload.metadata,
+          delete: () => upload.delete({
+            ignoreNotFound: true,
+            ifGenerationMatch: upload.metadata.generation,
+          }),
+        };
+      }
     }
   }
 

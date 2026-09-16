@@ -17,6 +17,7 @@ let cleanupPhotos: typeof import("../src/lib/photoCleanup").cleanupPhotos;
 let withPhotoWrite: typeof import("../src/lib/photoCleanup").withPhotoWrite;
 type Client = Awaited<ReturnType<typeof pool.connect>>;
 const path = "/objects/uploads/concurrency-fixture";
+const finalizedPath = "/objects/photos/concurrency-fixture";
 const now = Date.parse("2026-09-16T12:00:00Z");
 
 before(async () => {
@@ -66,7 +67,7 @@ function database(client: Client): typeof pool {
 
 async function storage() {
   const bytes = await imageBytes();
-  const state = { exists: true, attempts: 0, removals: 0, validations: 0 };
+  const state = { exists: true, finalized: false, attempts: 0, removals: 0, validations: 0 };
   const objects = {
     async *listPhotoUploads() {
       // Deliberately allow stale listings, as two bucket scans can overlap.
@@ -79,11 +80,24 @@ async function storage() {
           state.exists = false; // Matches ignoreNotFound: true.
         },
       };
+      if (state.finalized) {
+        yield {
+          objectPath: finalizedPath,
+          metadata: { timeCreated: "2026-09-14T00:00:00Z", generation: "1" },
+          async delete() {
+            state.finalized = false;
+          },
+        };
+      }
     },
     async getObjectEntityFile() {
       state.validations++;
       if (!state.exists) throw new Error("Fixture object not found");
       return photoFile(bytes);
+    },
+    async saveVerifiedPhoto() {
+      state.finalized = true;
+      return finalizedPath;
     },
   };
   return { state, objects: objects as unknown as Parameters<typeof withPhotoWrite>[3] & Parameters<typeof cleanupPhotos>[1] };
@@ -175,8 +189,9 @@ test("a save blocks cleanup, which preserves the newly committed attachment", { 
   await scenario(async ({ a, b, aPid, bPid, hold, track }) => {
     const { objects, state } = await storage();
     const written = gate();
-    const save = track(withPhotoWrite(database(a), path, async client => {
-      await client.query("INSERT INTO pgn_pnms VALUES (1, $1)", [path]);
+    const save = track(withPhotoWrite(database(a), path, async (client, savedPath) => {
+      assert.equal(savedPath, finalizedPath);
+      await client.query("INSERT INTO pgn_pnms VALUES (1, $1)", [savedPath]);
       written.open();
       await hold.promise;
     }, objects));
@@ -186,9 +201,10 @@ test("a save blocks cleanup, which preserves the newly committed attachment", { 
     assert.equal(state.attempts, 0);
     hold.open();
     await save;
-    assert.deepEqual(await cleanup, { deleted: 0 });
-    assert.equal(state.exists, true);
-    assert.equal((await b.query("SELECT photo_path FROM pgn_pnms")).rows[0].photo_path, path);
+    assert.deepEqual(await cleanup, { deleted: 1 });
+    assert.equal(state.exists, false);
+    assert.equal(state.finalized, true);
+    assert.equal((await b.query("SELECT photo_path FROM pgn_pnms")).rows[0].photo_path, finalizedPath);
   });
 });
 

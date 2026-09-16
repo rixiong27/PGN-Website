@@ -228,18 +228,24 @@ function writeDatabase(events: string[]) {
 test("withPhotoWrite acquires the table lock before checking that the object exists", async () => {
   const events: string[] = [];
   const { db, calls } = writeDatabase(events);
+  const savedPath = "/objects/photos/finalized";
   const objects = {
     async getObjectEntityFile(path: string) {
       events.push(`exists:${path}`);
       return photoFile(await imageBytes());
     },
+    async saveVerifiedPhoto() {
+      events.push("finalize");
+      return savedPath;
+    },
   };
   const result = await withPhotoWrite(
     db as never,
     "/objects/uploads/photo",
-    async client => {
+    async (client, persistedPath) => {
       events.push("write");
-      await client.query("UPDATE pgn_pnms SET photo_path=$1", ["/objects/uploads/photo"]);
+      assert.equal(persistedPath, savedPath);
+      await client.query("UPDATE pgn_pnms SET photo_path=$1", [persistedPath]);
       return "saved";
     },
     objects as never,
@@ -292,6 +298,9 @@ test("withPhotoWrite rolls back when the database write fails", async () => {
       events.push(`exists:${path}`);
       return photoFile(await imageBytes());
     },
+    async saveVerifiedPhoto() {
+      return "/objects/photos/write-failure";
+    },
   };
 
   await assert.rejects(
@@ -310,4 +319,115 @@ test("withPhotoWrite rolls back when the database write fails", async () => {
   assert.equal(calls.rollback, 1);
   assert.equal(calls.commit, 0);
   assert.equal(calls.released, 1);
+});
+
+test("withPhotoWrite persists the validated bytes even when staging is replaced during finalization", async () => {
+  const validBytes = await imageBytes();
+  const replacement = Buffer.from("not an image");
+  let stagingBytes = validBytes;
+  let finalizedBytes: Buffer | undefined;
+  let finalizedType: string | undefined;
+  const finalPath = "/objects/photos/exact-bytes";
+  const objects = {
+    async getObjectEntityFile() {
+      return photoFile(stagingBytes);
+    },
+    async saveVerifiedPhoto(photo: { bytes: Buffer; contentType: string }) {
+      // The reusable PUT target can change while the immutable object is being
+      // finalized. The saver must persist the bytes returned by validation.
+      finalizedBytes = Buffer.from(photo.bytes);
+      finalizedType = photo.contentType;
+      stagingBytes = replacement;
+      return finalPath;
+    },
+  };
+  let persistedPath: string | null | undefined;
+  await withPhotoWrite(
+    writeDatabase([]).db as never,
+    "/objects/uploads/reused",
+    async (_client, savedPath) => {
+      persistedPath = savedPath;
+    },
+    objects as never,
+  );
+
+  assert.equal(persistedPath, finalPath);
+  assert.deepEqual(finalizedBytes, validBytes);
+  assert.equal(finalizedType, "image/png");
+  assert.deepEqual(stagingBytes, replacement);
+});
+
+test("withPhotoWrite does not write the database when finalization fails", async () => {
+  const finalizationError = new Error("immutable object unavailable");
+  const { db, calls } = writeDatabase([]);
+  let writes = 0;
+  const objects = {
+    async getObjectEntityFile() {
+      return photoFile(await imageBytes());
+    },
+    async saveVerifiedPhoto() {
+      throw finalizationError;
+    },
+  };
+
+  await assert.rejects(
+    withPhotoWrite(
+      db as never,
+      "/objects/uploads/finalization-failure",
+      async () => {
+        writes++;
+      },
+      objects as never,
+    ),
+    finalizationError,
+  );
+
+  assert.equal(writes, 0);
+  assert.equal(calls.rollback, 1);
+  assert.equal(calls.commit, 0);
+  assert.equal(calls.released, 1);
+});
+
+test("withPhotoWrite preserves an already finalized path", async () => {
+  const finalPath = "/objects/photos/already-finalized";
+  let persistedPath: string | null | undefined;
+  const objects = {
+    async getObjectEntityFile() {
+      return photoFile(await imageBytes());
+    },
+    async saveVerifiedPhoto() {
+      throw new Error("must not re-finalize an immutable object");
+    },
+  };
+
+  await withPhotoWrite(
+    writeDatabase([]).db as never,
+    finalPath,
+    async (_client, savedPath) => {
+      persistedPath = savedPath;
+    },
+    objects as never,
+  );
+
+  assert.equal(persistedPath, finalPath);
+});
+
+test("delayed cleanup removes unreferenced finalized photos but preserves referenced finals", async () => {
+  const referenced = file("/objects/photos/referenced");
+  const unreferenced = file("/objects/photos/unreferenced");
+  const references = new Map<string, unknown[]>([
+    [referenced.object.objectPath, [{ photo_path: referenced.object.objectPath }]],
+  ]);
+  const { db, calls } = database({ references: path => references.get(path) ?? [] });
+
+  const result = await cleanupPhotos(
+    db as never,
+    { listPhotoUploads: () => uploads([referenced.object, unreferenced.object]) } as never,
+    now,
+  );
+
+  assert.deepEqual(result, { deleted: 1 });
+  assert.equal(referenced.deletes(), 0);
+  assert.equal(unreferenced.deletes(), 1);
+  assert.deepEqual(calls.references, [referenced.object.objectPath, unreferenced.object.objectPath]);
 });
