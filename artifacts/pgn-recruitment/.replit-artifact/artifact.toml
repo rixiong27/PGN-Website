@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "PGN Recruitment"
+description = "A private, invite-only recruitment workspace for Phi Gamma Nu at Virginia Tech, with VT-only access, PNM profiles, approval workflows, notes, voting rounds, and historical archives."
+version = "1.0.0"
+id = "artifacts/pgn-recruitment"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 21983
+
+[services.development]
+run = "pnpm --filter @workspace/pgn-recruitment run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/pgn-recruitment", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/pgn-recruitment/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "21983"
+BASE_PATH = "/"

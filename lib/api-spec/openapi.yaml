@@ -10,6 +10,24 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: access
+    description: Current member access and invite validation
+  - name: dashboard
+    description: Chapter overview
+  - name: pnms
+    description: Active and archived PNM records
+  - name: notes
+    description: PNM profile notes
+  - name: voting
+    description: Recruitment voting rounds and votes
+  - name: approvals
+    description: Pending member approvals
+  - name: users
+    description: Chapter member administration
+  - name: activity
+    description: Admin activity history
+  - name: storage
+    description: Private photo uploads
 paths:
   /healthz:
     get:
@@ -24,7 +42,449 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /me:
+    get:
+      operationId: getMe
+      tags: [access]
+      summary: Get the signed-in member profile
+      responses:
+        "200":
+          description: Current member
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Member"
+  /access/invite:
+    post:
+      operationId: validateInvite
+      tags: [access]
+      summary: Validate an invite code
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InviteInput"
+      responses:
+        "200":
+          description: Invite status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InviteValidation"
+  /dashboard:
+    get:
+      operationId: getDashboard
+      tags: [dashboard]
+      summary: Get dashboard totals and outstanding votes
+      responses:
+        "200":
+          description: Dashboard summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Dashboard"
+  /pnms:
+    get:
+      operationId: listPnms
+      tags: [pnms]
+      summary: List active or archived PNMs
+      parameters:
+        - $ref: "#/components/parameters/Search"
+        - $ref: "#/components/parameters/Year"
+        - $ref: "#/components/parameters/Major"
+        - $ref: "#/components/parameters/PipelineStatus"
+        - $ref: "#/components/parameters/Archived"
+        - $ref: "#/components/parameters/Sort"
+      responses:
+        "200":
+          description: PNM records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PNM"
+    post:
+      operationId: createPnm
+      tags: [pnms]
+      summary: Add a PNM manually
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PNMInput"
+      responses:
+        "201":
+          description: Created PNM
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PNM"
+  /pnms/import:
+    post:
+      operationId: importPnms
+      tags: [pnms]
+      summary: Import PNMs from CSV text
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CSVImportInput"
+      responses:
+        "200":
+          description: Import result with row-level errors
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CSVImportResult"
+  /pnms/{id}:
+    get:
+      operationId: getPnm
+      tags: [pnms]
+      summary: Get a PNM profile
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: PNM profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PNM"
+    patch:
+      operationId: updatePnm
+      tags: [pnms]
+      summary: Edit a PNM profile
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PNMUpdate"
+      responses:
+        "200":
+          description: Updated PNM
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PNM"
+    delete:
+      operationId: deletePnm
+      tags: [pnms]
+      summary: Delete a PNM
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "204":
+          description: Deleted
+  /pnms/{id}/notes:
+    get:
+      operationId: listNotes
+      tags: [notes]
+      summary: List notes on a PNM
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Notes
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Note"
+    post:
+      operationId: createNote
+      tags: [notes]
+      summary: Add a note to a PNM
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NoteInput"
+      responses:
+        "201":
+          description: Created note
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Note"
+  /notes/{id}/pin:
+    patch:
+      operationId: toggleNotePin
+      tags: [notes]
+      summary: Pin or unpin a note
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NotePinUpdate"
+      responses:
+        "200":
+          description: Updated note
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Note"
+  /voting/rounds:
+    get:
+      operationId: listVotingRounds
+      tags: [voting]
+      summary: List voting rounds
+      responses:
+        "200":
+          description: Voting rounds
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/VotingRound"
+    post:
+      operationId: createVotingRound
+      tags: [voting]
+      summary: Open a voting round for PNMs
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VotingRoundInput"
+      responses:
+        "201":
+          description: Open voting round
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VotingRound"
+  /voting/rounds/{id}:
+    get:
+      operationId: getVotingRound
+      tags: [voting]
+      summary: Get a voting round and its results
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Voting round detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VotingRoundDetail"
+  /voting/rounds/{id}/close:
+    post:
+      operationId: closeVotingRound
+      tags: [voting]
+      summary: Close a voting round
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Closed voting round
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VotingRound"
+  /voting/rounds/{id}/votes:
+    post:
+      operationId: castVote
+      tags: [voting]
+      summary: Cast or update one vote for a PNM
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VoteInput"
+      responses:
+        "201":
+          description: Saved vote
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VoteReceipt"
+  /approvals:
+    get:
+      operationId: listPendingApprovals
+      tags: [approvals]
+      summary: List pending members
+      responses:
+        "200":
+          description: Pending members
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PendingApproval"
+  /approvals/{id}/approve:
+    post:
+      operationId: approveMember
+      tags: [approvals]
+      summary: Approve a pending member
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Approved member
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Member"
+  /approvals/{id}/reject:
+    post:
+      operationId: rejectMember
+      tags: [approvals]
+      summary: Reject a pending member
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "204":
+          description: Rejected
+  /users:
+    get:
+      operationId: listUsers
+      tags: [users]
+      summary: List chapter users
+      responses:
+        "200":
+          description: Users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Member"
+    post:
+      operationId: createUser
+      tags: [users]
+      summary: Pre-approve a chapter member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MemberInput"
+      responses:
+        "201":
+          description: Pre-approved member
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Member"
+  /users/{id}/role:
+    patch:
+      operationId: updateUserRole
+      tags: [users]
+      summary: Promote or demote a user
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RoleUpdate"
+      responses:
+        "200":
+          description: Updated member
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Member"
+  /activity:
+    get:
+      operationId: listActivity
+      tags: [activity]
+      summary: List admin activity
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        "200":
+          description: Activity entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ActivityLog"
+  /storage/uploads/request-url:
+    post:
+      operationId: requestUploadUrl
+      tags: [storage]
+      summary: Request a private PNM photo upload URL
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UploadInput"
+      responses:
+        "200":
+          description: Presigned upload URL
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadResponse"
 components:
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+    Search:
+      name: search
+      in: query
+      schema:
+        type: string
+    Year:
+      name: year
+      in: query
+      schema:
+        type: string
+    Major:
+      name: major
+      in: query
+      schema:
+        type: string
+    PipelineStatus:
+      name: status
+      in: query
+      schema:
+        $ref: "#/components/schemas/PipelineStatus"
+    Archived:
+      name: archived
+      in: query
+      schema:
+        type: boolean
+        default: false
+    Sort:
+      name: sort
+      in: query
+      schema:
+        type: string
+        enum: [name, year, major, status, score]
   schemas:
     HealthStatus:
       type: object
@@ -33,4 +493,251 @@ components:
           type: string
       required:
         - status
+    Member:
+      type: object
+      required: [id, name, email, role, status, createdAt]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        email: { type: string, format: email }
+        role:
+          type: string
+          enum: [super_admin, admin, member, pending]
+        status:
+          type: string
+          enum: [pending, active, rejected]
+        createdAt: { type: string, format: date-time }
+    MemberInput:
+      type: object
+      required: [name, email]
+      properties:
+        name: { type: string, minLength: 1 }
+        email: { type: string, format: email }
+    InviteInput:
+      type: object
+      required: [code]
+      properties:
+        code: { type: string, minLength: 1 }
+    InviteValidation:
+      type: object
+      required: [valid]
+      properties:
+        valid: { type: boolean }
+        label: { type: ["string", "null"] }
+    Dashboard:
+      type: object
+      required: [totalPnms, activePnms, pendingApprovals, pipeline, openRounds, outstandingVotes]
+      properties:
+        totalPnms: { type: integer }
+        activePnms: { type: integer }
+        pendingApprovals: { type: integer }
+        pipeline:
+          type: array
+          items:
+            $ref: "#/components/schemas/PipelineCount"
+        openRounds:
+          type: array
+          items:
+            $ref: "#/components/schemas/VotingRound"
+        outstandingVotes: { type: integer }
+    PipelineCount:
+      type: object
+      required: [status, count]
+      properties:
+        status:
+          $ref: "#/components/schemas/PipelineStatus"
+        count: { type: integer }
+    PipelineStatus:
+      type: string
+      enum: [new, interviewed, voting, bid_extended, not_extended, accepted, declined]
+    PNM:
+      type: object
+      required: [id, firstName, lastName, pronouns, email, year, major, minor, gpa, status, archived, createdAt, updatedAt, averageVote, voteCount]
+      properties:
+        id: { type: integer }
+        firstName: { type: string }
+        lastName: { type: string }
+        pronouns: { type: ["string", "null"] }
+        email: { type: ["string", "null"], format: email }
+        year: { type: ["string", "null"] }
+        major: { type: ["string", "null"] }
+        minor: { type: ["string", "null"] }
+        gpa: { type: ["number", "null"], minimum: 0, maximum: 4 }
+        photoPath: { type: ["string", "null"] }
+        status:
+          $ref: "#/components/schemas/PipelineStatus"
+        archived: { type: boolean }
+        semester: { type: ["string", "null"] }
+        averageVote: { type: ["number", "null"] }
+        voteCount: { type: integer }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    PNMInput:
+      type: object
+      required: [firstName, lastName]
+      properties:
+        firstName: { type: string, minLength: 1 }
+        lastName: { type: string, minLength: 1 }
+        pronouns: { type: ["string", "null"] }
+        email: { type: ["string", "null"], format: email }
+        year: { type: ["string", "null"] }
+        major: { type: ["string", "null"] }
+        minor: { type: ["string", "null"] }
+        gpa: { type: ["number", "null"], minimum: 0, maximum: 4 }
+        photoPath: { type: ["string", "null"] }
+        status:
+          $ref: "#/components/schemas/PipelineStatus"
+        semester: { type: ["string", "null"] }
+    PNMUpdate:
+      allOf:
+        - $ref: "#/components/schemas/PNMInput"
+      properties:
+        firstName: { type: string }
+        lastName: { type: string }
+    CSVImportInput:
+      type: object
+      required: [csv]
+      properties:
+        csv: { type: string, minLength: 1 }
+        semester: { type: ["string", "null"] }
+    CSVImportResult:
+      type: object
+      required: [imported, errors]
+      properties:
+        imported: { type: integer }
+        errors:
+          type: array
+          items:
+            $ref: "#/components/schemas/CSVRowError"
+    CSVRowError:
+      type: object
+      required: [row, message]
+      properties:
+        row: { type: integer }
+        message: { type: string }
+    Note:
+      type: object
+      required: [id, pnmId, authorName, content, pinned, createdAt]
+      properties:
+        id: { type: integer }
+        pnmId: { type: integer }
+        authorName: { type: string }
+        content: { type: string }
+        pinned: { type: boolean }
+        createdAt: { type: string, format: date-time }
+    NoteInput:
+      type: object
+      required: [content]
+      properties:
+        content: { type: string, minLength: 1 }
+    NotePinUpdate:
+      type: object
+      required: [pinned]
+      properties:
+        pinned: { type: boolean }
+    VotingRound:
+      type: object
+      required: [id, name, status, pnmIds, openedAt, voteCount]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        status:
+          type: string
+          enum: [open, closed]
+        pnmIds:
+          type: array
+          items: { type: integer }
+        deadline: { type: ["string", "null"], format: date-time }
+        openedAt: { type: string, format: date-time }
+        closedAt: { type: ["string", "null"], format: date-time }
+        voteCount: { type: integer }
+    VotingRoundInput:
+      type: object
+      required: [name, pnmIds]
+      properties:
+        name: { type: string, minLength: 1 }
+        pnmIds:
+          type: array
+          minItems: 1
+          items: { type: integer }
+        deadline: { type: ["string", "null"], format: date-time }
+    VotingRoundDetail:
+      allOf:
+        - $ref: "#/components/schemas/VotingRound"
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/VoteResult"
+    VoteResult:
+      type: object
+      required: [pnmId, pnmName, average, voteCount]
+      properties:
+        pnmId: { type: integer }
+        pnmName: { type: string }
+        average: { type: ["number", "null"] }
+        voteCount: { type: integer }
+        votes:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminVote"
+    AdminVote:
+      type: object
+      required: [score, memberName, createdAt]
+      properties:
+        score: { type: integer, minimum: 1, maximum: 5 }
+        memberName: { type: string }
+        createdAt: { type: string, format: date-time }
+    VoteInput:
+      type: object
+      required: [pnmId, score]
+      properties:
+        pnmId: { type: integer }
+        score: { type: integer, minimum: 1, maximum: 5 }
+    VoteReceipt:
+      type: object
+      required: [roundId, pnmId, score, saved]
+      properties:
+        roundId: { type: integer }
+        pnmId: { type: integer }
+        score: { type: integer }
+        saved: { type: boolean }
+    PendingApproval:
+      type: object
+      required: [id, name, email, requestedAt]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        email: { type: string, format: email }
+        requestedAt: { type: string, format: date-time }
+        inviteLabel: { type: ["string", "null"] }
+    RoleUpdate:
+      type: object
+      required: [role]
+      properties:
+        role:
+          type: string
+          enum: [admin, member]
+    ActivityLog:
+      type: object
+      required: [id, actorName, action, target, createdAt]
+      properties:
+        id: { type: integer }
+        actorName: { type: string }
+        action: { type: string }
+        target: { type: string }
+        createdAt: { type: string, format: date-time }
+    UploadInput:
+      type: object
+      required: [name, size, contentType]
+      properties:
+        name: { type: string }
+        size: { type: integer, minimum: 1 }
+        contentType: { type: string }
+    UploadResponse:
+      type: object
+      required: [uploadURL, objectPath]
+      properties:
+        uploadURL: { type: string, format: uri }
+        objectPath: { type: string }
 
