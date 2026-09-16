@@ -30,7 +30,9 @@ if (!basePath) {
 export default defineConfig({
   base: basePath,
   plugins: [
-    react(),
+    // This app currently keeps its route components in one module. Full reloads
+    // avoid stale hook signatures when that module changes during development.
+    react({ fastRefresh: false }),
     tailwindcss({ optimize: false }),
     runtimeErrorOverlay(),
     ...(process.env.NODE_ENV !== 'production' &&

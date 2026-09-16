@@ -1,0 +1,1 @@
+- [Route hot-reload stability](route-hot-reload-stability.md) — keep full reloads while route components share one large module; Fast Refresh caused cross-page hook failures.
