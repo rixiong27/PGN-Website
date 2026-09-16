@@ -324,13 +324,70 @@ function StatusBadge({ value }: { value: string }) {
 }
 
 function Logo({ dark = false }: { dark?: boolean }) {
-  return (
-    <Link href="/sign-in" aria-label="PGN — go to login" style={{ display: 'flex', alignItems: 'center', gap: 10, textDecoration: 'none', color: dark ? 'white' : 'hsl(var(--foreground))' }}>
+  const { isLoaded, isSignedIn } = useAuth();
+  const { signOut } = useClerk();
+  const queryClient = useQueryClient();
+  const [status, setStatus] = useState<'idle' | 'signing-out' | 'error'>('idle');
+  const [error, setError] = useState('');
+  const handleSignOut = async () => {
+    if (!isLoaded || !isSignedIn || status === 'signing-out') return;
+    setStatus('signing-out');
+    setError('');
+    queryClient.clear();
+    try {
+      await signOut({ redirectUrl: `${basePath}/sign-in` });
+      queryClient.clear();
+    } catch (signOutError: unknown) {
+      setError(apiErrorMessage(signOutError, 'Your session is still active. Check your connection and try signing out again.'));
+      setStatus('error');
+    }
+  };
+  const logoContent = (
+    <>
       <div className="logo-mark">ΦΓΝ</div>
       <div>
         <div style={{ fontWeight: 700, letterSpacing: '-.04em', fontSize: 14 }}>VirginatechPGN</div>
         <div style={{ color: dark ? 'hsl(0 0% 55%)' : 'hsl(var(--muted-foreground))', fontSize: 10, letterSpacing: '.08em', textTransform: 'uppercase', marginTop: 2 }}>Virginia Tech</div>
       </div>
+    </>
+  );
+
+  if (isLoaded && isSignedIn) {
+    return (
+      <div style={{ display: 'grid', gap: 5 }}>
+        <button
+          type="button"
+          onClick={() => void handleSignOut()}
+          disabled={status === 'signing-out'}
+          aria-busy={status === 'signing-out'}
+          aria-label={status === 'signing-out' ? 'Signing out of PGN' : 'Sign out of PGN'}
+          data-testid="button-logo-sign-out"
+          style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 0, border: 0, background: 'transparent', textAlign: 'left', font: 'inherit', color: dark ? 'white' : 'hsl(var(--foreground))', cursor: status === 'signing-out' ? 'wait' : 'pointer' }}
+        >
+          {logoContent}
+        </button>
+        {status === 'error' ? <div role="alert" aria-live="polite" style={{ maxWidth: 220, color: 'hsl(var(--primary))', fontSize: 10 }}>{error}</div> : null}
+      </div>
+    );
+  }
+
+  if (!isLoaded) {
+    return (
+      <button
+        type="button"
+        disabled
+        aria-label="Loading PGN session"
+        data-testid="button-logo-loading"
+        style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 0, border: 0, background: 'transparent', textAlign: 'left', font: 'inherit', color: dark ? 'white' : 'hsl(var(--foreground))', cursor: 'wait' }}
+      >
+        {logoContent}
+      </button>
+    );
+  }
+
+  return (
+    <Link href="/sign-in" aria-label="PGN — go to login" data-testid="link-logo-sign-in" style={{ display: 'flex', alignItems: 'center', gap: 10, textDecoration: 'none', color: dark ? 'white' : 'hsl(var(--foreground))' }}>
+      {logoContent}
     </Link>
   );
 }
@@ -535,6 +592,8 @@ function Dashboard() {
 function Roster() {
   const queryClient = useQueryClient();
   const [, setLocation] = useLocation();
+  const { data: user } = useGetMe();
+  const canManageRoster = user?.role === 'admin' || user?.role === 'super_admin';
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
   const [sort, setSort] = useState<'name' | 'year' | 'major' | 'status' | 'score'>('name');
@@ -551,8 +610,17 @@ function Roster() {
   const importPnms = useImportPnms();
   const [form, setForm] = useState({ firstName: '', lastName: '', email: '', major: '', year: 'Freshman', semester: 'Fall 2026' });
   const [formError, setFormError] = useState('');
+  useEffect(() => {
+    if (canManageRoster) return;
+    // Close and clear any admin form if a role refresh removes write access.
+    setShowAdd(false);
+    setShowImport(false);
+    setCsv('');
+    setFormError('');
+  }, [canManageRoster]);
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
+    if (!canManageRoster) return;
     setFormError('');
     const data = toPnmInput(form);
     if (!data) {
@@ -579,8 +647,11 @@ function Roster() {
       },
     });
   };
-  const submitImport = (event: React.FormEvent) => { event.preventDefault(); if (!csv.trim()) return; importPnms.mutate({ data: { csv: csv.trim(), semester: 'Fall 2026' } }, { onSuccess: (result) => { setCsv(''); setShowImport(false); void queryClient.invalidateQueries({ queryKey: getListPnmsQueryKey() }); toast.show(`${result.imported} PNM${result.imported === 1 ? '' : 's'} imported.`); } }); };
-  return <><PageHeader eyebrow="Workspace / Roster" title="Active roster" subtitle="The people at the center of this semester’s recruitment. Save a PNM to add their profile photo next." action={<div style={{ display: 'flex', gap: 8 }}><button className="btn btn-secondary" onClick={() => setShowImport((value) => !value)} data-testid="button-import-pnms"><FileText size={14} /> Import CSV</button><button className="btn btn-primary" onClick={() => setShowAdd((value) => !value)} data-testid="button-add-pnm"><Plus size={15} /> Add PNM</button></div>} />{showImport ? <form className="card toolbar" onSubmit={submitImport} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 12, marginBottom: 18 }}><div className="field"><label className="field-label" htmlFor="pnm-csv">CSV rows</label><textarea id="pnm-csv" className="textarea" value={csv} onChange={(e) => setCsv(e.target.value)} placeholder="firstName,lastName,email,major,year&#10;Jordan,Lee,jordan@vt.edu,Marketing,Junior" data-testid="textarea-pnm-csv" /></div><div style={{ display: 'flex', alignItems: 'end' }}><button className="btn btn-primary" disabled={importPnms.isPending || !csv.trim()} type="submit" data-testid="button-save-import">{importPnms.isPending ? 'Importing…' : 'Import rows'}</button></div></form> : null}{showAdd ? <form className="card toolbar" onSubmit={submit} style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr) auto', gap: 12, marginBottom: 18 }}><div className="pnm-photo-next-step" role="note">Save the PNM first, then add their photo from the saved profile.</div><div className="field"><label className="field-label" htmlFor="pnm-first">First name</label><input id="pnm-first" className="input" required value={form.firstName} onChange={(e) => setForm({ ...form, firstName: e.target.value })} data-testid="input-pnm-first-name" /></div><div className="field"><label className="field-label" htmlFor="pnm-last">Last name</label><input id="pnm-last" className="input" required value={form.lastName} onChange={(e) => setForm({ ...form, lastName: e.target.value })} data-testid="input-pnm-last-name" /></div><div className="field"><label className="field-label" htmlFor="pnm-email">Email</label><input id="pnm-email" className="input" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} data-testid="input-pnm-email" /></div><div className="field"><label className="field-label" htmlFor="pnm-major">Major</label><input id="pnm-major" className="input" value={form.major} onChange={(e) => setForm({ ...form, major: e.target.value })} data-testid="input-pnm-major" /></div><div className="field"><label className="field-label" htmlFor="pnm-year">Year</label><select id="pnm-year" className="select" value={form.year} onChange={(e) => setForm({ ...form, year: e.target.value })} data-testid="select-pnm-year"><option>Freshman</option><option>Sophomore</option><option>Junior</option><option>Senior</option><option>Graduate</option></select></div><div style={{ display: 'flex', gap: 7, alignItems: 'end' }}><button className="btn btn-primary" disabled={create.isPending} type="submit" data-testid="button-save-pnm">{create.isPending ? 'Saving…' : 'Save PNM'}</button><button className="btn btn-ghost" type="button" onClick={() => setShowAdd(false)} data-testid="button-cancel-pnm">Cancel</button></div></form> : null}{formError ? <ActionError title="Check the PNM details." message={formError} /> : create.isError ? <ActionError title="Could not add PNM." message={apiErrorMessage(create.error, 'The PNM could not be added. Check the required fields and try again.')} /> : importPnms.isError ? <ActionError title="Could not import PNMs." message={apiErrorMessage(importPnms.error, 'The roster could not be imported. Check the CSV and try again.')} /> : null}<div className="card"><div className="toolbar"><div style={{ position: 'relative', flex: 1, minWidth: 220 }}><Search size={15} style={{ position: 'absolute', left: 11, top: 12, color: 'hsl(var(--muted-foreground))' }} /><input className="input search-input" style={{ paddingLeft: 34 }} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search by name, major, or email" data-testid="input-roster-search" /></div><select className="select filter-select" value={status} onChange={(event) => setStatus(event.target.value)} data-testid="select-roster-status"><option value="">All pipeline states</option>{Object.entries(pipelineLabels).map(([value, label]) => <option key={value} value={label}>{label}</option>)}</select><select className="select filter-select" value={sort} onChange={(event) => setSort(event.target.value as typeof sort)} data-testid="select-roster-sort"><option value="name">Sort: Name</option><option value="year">Sort: Year</option><option value="major">Sort: Major</option><option value="status">Sort: Status</option><option value="score">Sort: Legacy average</option></select><button className="btn btn-secondary btn-sm" onClick={() => { setSearch(''); setStatus(''); }} data-testid="button-clear-filters"><SlidersHorizontal size={14} /> Clear</button></div>{isLoading ? <LoadingBlock /> : isError ? <div style={{ padding: 16 }}><ErrorState onRetry={() => refetch()} /></div> : !data?.length ? <EmptyState title="No PNMs match these filters" copy="Try widening the search or add a new PNM to the roster." icon={Users} /> : <div className="table-wrap"><table className="data-table"><thead><tr><th>PNM</th><th>Year / major</th><th>GPA</th><th>Pipeline</th><th>Legacy avg</th><th>Updated</th><th /></tr></thead><tbody>{data.map((pnm) => <tr key={pnm.id} data-testid={`row-pnm-${pnm.id}`}><td><Link href={`/pnms/${pnm.id}`} style={{ textDecoration: 'none', color: 'inherit' }} data-testid={`link-pnm-${pnm.id}`}><div className="person"><div className="avatar">{initials(`${pnm.firstName} ${pnm.lastName}`)}</div><div><div className="person-name">{pnm.firstName} {pnm.lastName}</div><div className="person-sub">{pnm.email ?? 'No email recorded'}</div></div></div></Link></td><td><div>{pnm.year ?? '—'}</div><div className="person-sub">{pnm.major ?? 'Major not set'}</div></td><td>{pnm.gpa?.toFixed(2) ?? '—'}</td><td><StatusBadge value={pnm.status} /></td><td><span style={{ fontFamily: 'var(--app-font-mono)' }}>{pnm.averageVote?.toFixed(1) ?? '—'}</span><span className="person-sub" style={{ display: 'block' }}>{pnm.voteCount} legacy scores</span></td><td className="person-sub">{formatRelative(pnm.updatedAt)}</td><td><Link href={`/pnms/${pnm.id}`} className="btn btn-ghost btn-sm" data-testid={`button-view-pnm-${pnm.id}`}><ArrowRight size={14} /></Link></td></tr>)}</tbody></table></div>}</div><Toast message={toast.message} /></>;
+  const submitImport = (event: React.FormEvent) => { event.preventDefault(); if (!canManageRoster || !csv.trim()) return; importPnms.mutate({ data: { csv: csv.trim(), semester: 'Fall 2026' } }, { onSuccess: (result) => { setCsv(''); setShowImport(false); void queryClient.invalidateQueries({ queryKey: getListPnmsQueryKey() }); toast.show(`${result.imported} PNM${result.imported === 1 ? '' : 's'} imported.`); } }); };
+  const subtitle = canManageRoster
+    ? 'The people at the center of this semester’s recruitment. Save a PNM to add their profile photo next.'
+    : 'Review the people at the center of this semester’s recruitment. Chapter admins manage roster additions and photos.';
+  return <><PageHeader eyebrow="Workspace / Roster" title="Active roster" subtitle={subtitle} action={canManageRoster ? <div style={{ display: 'flex', gap: 8 }}><button className="btn btn-secondary" onClick={() => setShowImport((value) => !value)} data-testid="button-import-pnms"><FileText size={14} /> Import CSV</button><button className="btn btn-primary" onClick={() => setShowAdd((value) => !value)} data-testid="button-add-pnm"><Plus size={15} /> Add PNM</button></div> : null} />{canManageRoster && showImport ? <form className="card toolbar" onSubmit={submitImport} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 12, marginBottom: 18 }}><div className="field"><label className="field-label" htmlFor="pnm-csv">CSV rows</label><textarea id="pnm-csv" className="textarea" value={csv} onChange={(e) => setCsv(e.target.value)} placeholder="first_name,last_name,pronouns,email,year,major,minor,gpa&#10;Jordan,Lee,,jordan@vt.edu,Junior,Marketing,," data-testid="textarea-pnm-csv" /></div><div style={{ display: 'flex', alignItems: 'end' }}><button className="btn btn-primary" disabled={importPnms.isPending || !csv.trim()} type="submit" data-testid="button-save-import">{importPnms.isPending ? 'Importing…' : 'Import rows'}</button></div></form> : null}{canManageRoster && showAdd ? <form className="card toolbar" onSubmit={submit} style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr) auto', gap: 12, marginBottom: 18 }}><div className="pnm-photo-next-step" role="note">Save the PNM first, then add their photo from the saved profile.</div><div className="field"><label className="field-label" htmlFor="pnm-first">First name</label><input id="pnm-first" className="input" required value={form.firstName} onChange={(e) => setForm({ ...form, firstName: e.target.value })} data-testid="input-pnm-first-name" /></div><div className="field"><label className="field-label" htmlFor="pnm-last">Last name</label><input id="pnm-last" className="input" required value={form.lastName} onChange={(e) => setForm({ ...form, lastName: e.target.value })} data-testid="input-pnm-last-name" /></div><div className="field"><label className="field-label" htmlFor="pnm-email">Email</label><input id="pnm-email" className="input" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} data-testid="input-pnm-email" /></div><div className="field"><label className="field-label" htmlFor="pnm-major">Major</label><input id="pnm-major" className="input" value={form.major} onChange={(e) => setForm({ ...form, major: e.target.value })} data-testid="input-pnm-major" /></div><div className="field"><label className="field-label" htmlFor="pnm-year">Year</label><select id="pnm-year" className="select" value={form.year} onChange={(e) => setForm({ ...form, year: e.target.value })} data-testid="select-pnm-year"><option>Freshman</option><option>Sophomore</option><option>Junior</option><option>Senior</option><option>Graduate</option></select></div><div style={{ display: 'flex', gap: 7, alignItems: 'end' }}><button className="btn btn-primary" disabled={create.isPending} type="submit" data-testid="button-save-pnm">{create.isPending ? 'Saving…' : 'Save PNM'}</button><button className="btn btn-ghost" type="button" onClick={() => setShowAdd(false)} data-testid="button-cancel-pnm">Cancel</button></div></form> : null}{formError ? <ActionError title="Check the PNM details." message={formError} /> : create.isError ? <ActionError title="Could not add PNM." message={apiErrorMessage(create.error, 'The PNM could not be added. Check the required fields and try again.')} /> : importPnms.isError ? <ActionError title="Could not import PNMs." message={apiErrorMessage(importPnms.error, 'The roster could not be imported. Check the CSV and try again.')} /> : null}<div className="card"><div className="toolbar"><div style={{ position: 'relative', flex: 1, minWidth: 220 }}><Search size={15} style={{ position: 'absolute', left: 11, top: 12, color: 'hsl(var(--muted-foreground))' }} /><input className="input search-input" style={{ paddingLeft: 34 }} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search by name, major, or email" data-testid="input-roster-search" /></div><select className="select filter-select" value={status} onChange={(event) => setStatus(event.target.value)} data-testid="select-roster-status"><option value="">All pipeline states</option>{Object.entries(pipelineLabels).map(([value, label]) => <option key={value} value={label}>{label}</option>)}</select><select className="select filter-select" value={sort} onChange={(event) => setSort(event.target.value as typeof sort)} data-testid="select-roster-sort"><option value="name">Sort: Name</option><option value="year">Sort: Year</option><option value="major">Sort: Major</option><option value="status">Sort: Status</option><option value="score">Sort: Legacy average</option></select><button className="btn btn-secondary btn-sm" onClick={() => { setSearch(''); setStatus(''); }} data-testid="button-clear-filters"><SlidersHorizontal size={14} /> Clear</button></div>{isLoading ? <LoadingBlock /> : isError ? <div style={{ padding: 16 }}><ErrorState onRetry={() => refetch()} /></div> : !data?.length ? <EmptyState title="No PNMs match these filters" copy={canManageRoster ? 'Try widening the search or add a new PNM to the roster.' : 'Try widening the search. Chapter admins add new PNMs to the roster.'} icon={Users} /> : <div className="table-wrap"><table className="data-table"><thead><tr><th>PNM</th><th>Year / major</th><th>GPA</th><th>Pipeline</th><th>Legacy avg</th><th>Updated</th><th /></tr></thead><tbody>{data.map((pnm) => <tr key={pnm.id} data-testid={`row-pnm-${pnm.id}`}><td><Link href={`/pnms/${pnm.id}`} style={{ textDecoration: 'none', color: 'inherit' }} data-testid={`link-pnm-${pnm.id}`}><div className="person"><div className="avatar">{initials(`${pnm.firstName} ${pnm.lastName}`)}</div><div><div className="person-name">{pnm.firstName} {pnm.lastName}</div><div className="person-sub">{pnm.email ?? 'No email recorded'}</div></div></div></Link></td><td><div>{pnm.year ?? '—'}</div><div className="person-sub">{pnm.major ?? 'Major not set'}</div></td><td>{pnm.gpa?.toFixed(2) ?? '—'}</td><td><StatusBadge value={pnm.status} /></td><td><span style={{ fontFamily: 'var(--app-font-mono)' }}>{pnm.averageVote?.toFixed(1) ?? '—'}</span><span className="person-sub" style={{ display: 'block' }}>{pnm.voteCount} legacy scores</span></td><td className="person-sub">{formatRelative(pnm.updatedAt)}</td><td><Link href={`/pnms/${pnm.id}`} className="btn btn-ghost btn-sm" data-testid={`button-view-pnm-${pnm.id}`}><ArrowRight size={14} /></Link></td></tr>)}</tbody></table></div>}</div><Toast message={toast.message} /></>;
 }
 
 function Profile() {

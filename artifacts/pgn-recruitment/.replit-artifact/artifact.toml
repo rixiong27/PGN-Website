@@ -15,9 +15,16 @@ localPort = 21983
 run = "pnpm --filter @workspace/pgn-recruitment run dev"
 
 [services.production]
-build = [ "pnpm", "--filter", "@workspace/pgn-recruitment", "run", "build" ]
 serve = "static"
 publicDir = "artifacts/pgn-recruitment/dist/public"
+
+[services.production.build]
+args = [ "pnpm", "--filter", "@workspace/pgn-recruitment", "run", "build" ]
+
+[services.production.build.env]
+NODE_ENV = "production"
+PORT = "21983"
+BASE_PATH = "/"
 
 [[services.production.rewrites]]
 from = "/*"

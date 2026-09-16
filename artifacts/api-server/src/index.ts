@@ -1,7 +1,6 @@
 import app from "./app";
 import { logger } from "./lib/logger";
 import { pool } from "@workspace/db";
-import { applyRecruitmentMigration } from "./lib/recruitmentMigration";
 import { startPhotoCleanup } from "./lib/photoCleanupScheduler";
 
 const rawPort = process.env["PORT"];
@@ -19,7 +18,8 @@ if (Number.isNaN(port) || port <= 0) {
 }
 
 async function start(): Promise<void> {
-  await applyRecruitmentMigration(pool);
+  // Schema changes are applied by the development post-merge and production
+  // publish flows; the API must never mutate schema during startup.
   app.listen(port, (err) => {
     if (err) {
       logger.error({ err }, "Error listening on port");

@@ -176,6 +176,77 @@ test("allows any verified email domain to join and keeps chapter approval pendin
   assert.equal(access.body.status, "pending");
 });
 
+test("never promotes the first chapter-code user to Super Admin", async () => {
+  state.invites.push({ code: "PGN-VALID", label: "Fall 2026", active: true });
+  authByUser.firstUser = {
+    userId: "clerk-first-user",
+    sessionClaims: { email: "first@example.com", name: "First User" },
+  };
+
+  const joined = await request(buildApp(), "POST", "/access/join", { code: "PGN-VALID" }, "firstUser");
+  assert.equal(joined.status, 201);
+  assert.equal(joined.body.role, "pending");
+  assert.equal(joined.body.status, "pending");
+});
+
+test("relinks the saved owner to a new Clerk environment only after email verification", async () => {
+  state.users.push({
+    id: state.nextId++,
+    clerk_id: "clerk-development-owner",
+    name: "Chapter Owner",
+    email: "owner@example.com",
+    role: "super_admin",
+    status: "active",
+    created_at: new Date("2026-09-16T12:00:00.000Z"),
+  });
+  state.invites.push({ code: "PGN-VALID", label: "Fall 2026", active: true });
+  authByUser.productionOwner = {
+    userId: "clerk-production-owner",
+    sessionClaims: { email: "owner@example.com", name: "Production Owner" },
+  };
+
+  const joined = await request(
+    buildApp(async () => ({ email: "owner@example.com", name: "Production Owner" })),
+    "POST",
+    "/access/join",
+    { code: "PGN-VALID" },
+    "productionOwner",
+  );
+  assert.equal(joined.status, 201);
+  assert.equal(joined.body.role, "super_admin");
+  assert.equal(joined.body.status, "active");
+  assert.equal(state.users[0]?.clerk_id, "clerk-production-owner");
+  assert.equal(state.users[0]?.name, "Chapter Owner");
+});
+
+test("does not relink the saved owner when the verified email differs", async () => {
+  state.users.push({
+    id: state.nextId++,
+    clerk_id: "clerk-development-owner",
+    name: "Chapter Owner",
+    email: "owner@example.com",
+    role: "super_admin",
+    status: "active",
+    created_at: new Date("2026-09-16T12:00:00.000Z"),
+  });
+  state.invites.push({ code: "PGN-VALID", label: "Fall 2026", active: true });
+  authByUser.wrongOwner = {
+    userId: "clerk-wrong-owner",
+    sessionClaims: { email: "owner@example.com", name: "Wrong User" },
+  };
+
+  const joined = await request(
+    buildApp(async () => ({ email: "different@example.com", name: "Wrong User" })),
+    "POST",
+    "/access/join",
+    { code: "PGN-VALID" },
+    "wrongOwner",
+  );
+  assert.equal(joined.status, 403);
+  assert.deepEqual(joined.body, { error: "A verified email address is required" });
+  assert.equal(state.users[0]?.clerk_id, "clerk-development-owner");
+});
+
 test("resolves a verified email through Clerk when default session claims omit email", async () => {
   state.users.push({
     id: state.nextId++,

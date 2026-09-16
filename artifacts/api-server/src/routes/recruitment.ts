@@ -251,6 +251,11 @@ async function resolveVerifiedIdentity(
   return typeof result === "string" ? { email: result } : result;
 }
 
+async function resolveProviderVerifiedIdentity(clerkId: string): Promise<VerifiedIdentity | null> {
+  const result = await activeGetVerifiedEmail(clerkId);
+  return typeof result === "string" ? { email: result } : result;
+}
+
 async function ensureMember(req: AuthedRequest, res: Response, next: NextFunction): Promise<void> {
   const auth = activeGetAuth(req);
   const clerkId = auth.userId;
@@ -393,6 +398,35 @@ router.post("/access/join", async (req, res): Promise<void> => {
     return;
   }
   const name = identity.name?.trim() || email.split("@")[0];
+  const owner = await activePool.query<MemberRow>(
+    "SELECT * FROM pgn_users WHERE lower(email) = $1 AND role = 'super_admin' AND status = 'active' AND clerk_id <> $2 LIMIT 1",
+    [email, clerkId],
+  );
+  if (owner.rows[0]) {
+    let verifiedOwner: VerifiedIdentity | null;
+    try {
+      verifiedOwner = await resolveProviderVerifiedIdentity(clerkId);
+    } catch {
+      res.status(503).json({ error: "Unable to verify your email address right now" });
+      return;
+    }
+    if (!verifiedOwner || verifiedOwner.email.trim().toLowerCase() !== email) {
+      res.status(403).json({ error: "A verified email address is required" });
+      return;
+    }
+
+    const linked = await activePool.query<MemberRow>(
+      "UPDATE pgn_users SET clerk_id = $1 WHERE id = $2 AND clerk_id <> $1 AND role = 'super_admin' AND status = 'active' RETURNING *",
+      [clerkId, owner.rows[0].id],
+    );
+    if (!linked.rows[0]) {
+      res.status(409).json({ error: "The chapter owner account was linked by another session" });
+      return;
+    }
+    res.status(201).json(memberView(linked.rows[0]));
+    return;
+  }
+
   const preapproved = await activePool.query<MemberRow>(
     "SELECT * FROM pgn_users WHERE lower(email) = $1 AND clerk_id LIKE 'preapproved:%' AND status = 'active'",
     [email],
@@ -410,11 +444,9 @@ router.post("/access/join", async (req, res): Promise<void> => {
     res.status(409).json({ error: "This email is already linked to another account" });
     return;
   }
-  const count = await activePool.query<{ count: string }>("SELECT COUNT(*)::text AS count FROM pgn_users");
-  const isFirst = Number(count.rows[0]?.count ?? 0) === 0;
   const inserted = await activePool.query<MemberRow>(
     "INSERT INTO pgn_users (clerk_id, name, email, role, status) VALUES ($1, $2, $3, $4, $5) RETURNING *",
-    [clerkId, name, email, isFirst ? "super_admin" : "pending", isFirst ? "active" : "pending"],
+    [clerkId, name, email, "pending", "pending"],
   );
   res.status(201).json(memberView(inserted.rows[0]));
 });

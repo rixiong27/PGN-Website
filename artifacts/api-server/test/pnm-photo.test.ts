@@ -60,6 +60,9 @@ async function fixture(run: (h: {
         }] : [] };
       }
       if (sql.startsWith("INSERT INTO pgn_activity")) return { rows: [] };
+      if (sql.startsWith("INSERT INTO pgn_pnms (first_name,last_name,pronouns,email,year,major,minor,gpa,semester)")) {
+        return { rows: [] };
+      }
       if (sql.startsWith("INSERT INTO pgn_pnms") || sql.startsWith("UPDATE pgn_pnms SET")) {
         const columns = ["first_name", "last_name", "pronouns", "email", "year", "major", "minor", "gpa", "photo_path", "status", "semester"];
         // Derive persisted fields from SQL bindings, never from an HTTP response.
@@ -157,6 +160,36 @@ test("upload URL permissions reject outsiders and members before accessing stora
       assert.deepEqual(await res.json(), { uploadURL, objectPath });
     }
     assert.equal(calls.uploads, 2);
+  });
+});
+
+test("only admins can create or import PNMs, without member writes", async () => {
+  await fixture(async ({ request, stored }) => {
+    const profile = { firstName: "Permission", lastName: "Check" };
+    const memberCreate = await request("/pnms", "member", profile);
+    assert.equal(memberCreate.status, 403);
+    assert.equal(stored.size, 0);
+
+    const memberImport = await request(
+      "/pnms/import",
+      "member",
+      { csv: "first_name,last_name,pronouns,email,year,major,minor,gpa\nNo,Write,,,,,," },
+    );
+    assert.equal(memberImport.status, 403);
+    assert.equal(stored.size, 0);
+
+    const adminCreate = await request("/pnms", "admin", profile);
+    assert.equal(adminCreate.status, 201);
+    assert.equal(stored.size, 1);
+
+    const adminImport = await request(
+      "/pnms/import",
+      "admin",
+      { csv: "first_name,last_name,pronouns,email,year,major,minor,gpa\nImported,PNM,,,,,," },
+    );
+    assert.equal(adminImport.status, 200);
+    assert.deepEqual(await adminImport.json(), { imported: 1, errors: [] });
+    assert.equal(stored.size, 1);
   });
 });
 
