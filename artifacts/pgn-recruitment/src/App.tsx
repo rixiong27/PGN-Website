@@ -74,6 +74,12 @@ import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { toPnmInput } from '@/lib/pnm-form';
+import {
+  claimReloadSignOutAttempt,
+  getStartupNavigationSnapshot,
+  releaseReloadSignOutAttempt,
+  shouldSignOutOnReload,
+} from '@/lib/reload-signout';
 
 const queryClient = new QueryClient();
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, '');
@@ -238,6 +244,68 @@ function apiErrorMessage(error: unknown, fallback: string) {
     if (error instanceof Error && error.message) return error.message;
   }
   return fallback;
+}
+
+function ReloadSignOutState({ error, onRetry }: { error?: string; onRetry?: () => void }) {
+  return (
+    <div className="auth-shell" role={error ? 'alert' : 'status'} aria-live="polite" data-testid={error ? 'reload-signout-error' : 'reload-signout-state'}>
+      <div className="auth-panel">
+        <div className="auth-card" style={{ background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: 14, padding: 26 }}>
+          <div className="logo-mark" style={{ marginBottom: 18 }}>ΦΓΝ</div>
+          <div className="eyebrow">{error ? 'Session protection' : 'Chapter workspace'}</div>
+          <h1 style={{ marginTop: 8 }}>{error ? 'We couldn’t sign you out.' : 'Signing you out…'}</h1>
+          <p className="auth-help">
+            {error ? error : 'For your privacy, this workspace requires a fresh sign-in after a browser refresh.'}
+          </p>
+          {onRetry ? <button className="btn btn-primary" type="button" onClick={onRetry} data-testid="button-retry-signout">Try again</button> : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ReloadSignOutGate({ children }: { children: ReactNode }) {
+  const { isLoaded, isSignedIn } = useAuth();
+  const { signOut } = useClerk();
+  const queryClient = useQueryClient();
+  const [, setLocation] = useLocation();
+  const shouldSignOut = shouldSignOutOnReload(getStartupNavigationSnapshot(), basePath);
+  const [status, setStatus] = useState<'checking' | 'signing-out' | 'idle' | 'error'>(shouldSignOut ? 'checking' : 'idle');
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!shouldSignOut || !isLoaded || status !== 'checking') return;
+    if (!isSignedIn) {
+      setStatus('idle');
+      return;
+    }
+    if (!claimReloadSignOutAttempt()) return;
+
+    setStatus('signing-out');
+    setError('');
+    // Clear private data before Clerk begins redirecting so no stale workspace
+    // data can be rendered or reused if the redirect is handled in-app.
+    queryClient.clear();
+    void signOut({ redirectUrl: `${basePath}/sign-in` })
+      .then(() => {
+        queryClient.clear();
+        setStatus('idle');
+        setLocation('/sign-in');
+      })
+      .catch((signOutError: unknown) => {
+        releaseReloadSignOutAttempt();
+        setError(apiErrorMessage(signOutError, 'Your session is still active. Check your connection and try signing out again.'));
+        setStatus('error');
+      });
+  }, [isLoaded, isSignedIn, queryClient, setLocation, shouldSignOut, signOut, status]);
+
+  if (status === 'checking' || status === 'signing-out') {
+    return <ReloadSignOutState />;
+  }
+  if (status === 'error') {
+    return <ReloadSignOutState error={error} onRetry={() => { setError(''); setStatus('checking'); }} />;
+  }
+  return <>{children}</>;
 }
 
 function EmptyState({ title, copy, icon: Icon = FileText }: { title: string; copy: string; icon?: typeof FileText }) {
@@ -740,7 +808,7 @@ function Router() {
 
 function ClerkApp() {
   const [, setLocation] = useLocation();
-  return <ClerkProvider publishableKey={clerkPubKey} proxyUrl={clerkProxyUrl} appearance={clerkAppearance} signInUrl={`${basePath}/sign-in`} signUpUrl={`${basePath}/sign-up`} localization={{ signIn: { start: { title: 'Welcome back', subtitle: 'Sign in to your VT PGN chapter workspace' } }, signUp: { start: { title: 'Create your account', subtitle: 'Step 1 of 2 · Verify any email address' } } }} routerPush={(to) => setLocation(stripBase(to))} routerReplace={(to) => setLocation(stripBase(to))}><QueryClientProvider client={queryClient}><TooltipProvider><Router /><Toaster /></TooltipProvider></QueryClientProvider></ClerkProvider>;
+  return <ClerkProvider publishableKey={clerkPubKey} proxyUrl={clerkProxyUrl} appearance={clerkAppearance} signInUrl={`${basePath}/sign-in`} signUpUrl={`${basePath}/sign-up`} localization={{ signIn: { start: { title: 'Welcome back', subtitle: 'Sign in to your VT PGN chapter workspace' } }, signUp: { start: { title: 'Create your account', subtitle: 'Step 1 of 2 · Verify any email address' } } }} routerPush={(to) => setLocation(stripBase(to))} routerReplace={(to) => setLocation(stripBase(to))}><QueryClientProvider client={queryClient}><TooltipProvider><ReloadSignOutGate><Router /></ReloadSignOutGate><Toaster /></TooltipProvider></QueryClientProvider></ClerkProvider>;
 }
 
 function App() {

@@ -22,12 +22,14 @@ type TestState = {
 
 const state: TestState = { users: [], invites: [], nextId: 1 };
 const authByUser: Record<string, { userId: string | null; sessionClaims?: Record<string, unknown> }> = {};
+const verifiedEmailByUser: Record<string, { email: string; name?: string | null } | null> = {};
 
 function resetState() {
   state.users = [];
   state.invites = [];
   state.nextId = 1;
   for (const key of Object.keys(authByUser)) delete authByUser[key];
+  for (const key of Object.keys(verifiedEmailByUser)) delete verifiedEmailByUser[key];
 }
 
 function copyMember(member: TestMember): TestMember {
@@ -98,13 +100,15 @@ function authForRequest(req: Request) {
   return authByUser[String(req.headers["x-test-user"] ?? "")] ?? { userId: null };
 }
 
-function buildApp() {
+function buildApp(getVerifiedEmail?: (clerkId: string) => Promise<{ email: string; name?: string | null } | null>) {
   const app = express();
   app.use(express.json());
-  app.use(createRecruitmentRouter({
+  const dependencies = {
     pool: fakePool as never,
     getAuth: authForRequest as never,
-  }));
+    ...(getVerifiedEmail ? { getVerifiedEmail: getVerifiedEmail as never } : {}),
+  };
+  app.use(createRecruitmentRouter(dependencies));
   return app;
 }
 
@@ -170,6 +174,99 @@ test("allows any verified email domain to join and keeps chapter approval pendin
   assert.equal(access.status, 200);
   assert.equal(access.body.email, "outsider@example.com");
   assert.equal(access.body.status, "pending");
+});
+
+test("resolves a verified email through Clerk when default session claims omit email", async () => {
+  state.users.push({
+    id: state.nextId++,
+    clerk_id: "clerk-admin",
+    name: "Chapter Admin",
+    email: "admin@vt.edu",
+    role: "admin",
+    status: "active",
+    created_at: new Date("2026-09-16T12:00:00.000Z"),
+  });
+  state.invites.push({ code: "PGN-VALID", label: "Fall 2026", active: true });
+  authByUser.outsider = { userId: "clerk-outsider", sessionClaims: { sub: "clerk-outsider" } };
+  verifiedEmailByUser["clerk-outsider"] = { email: "outsider@example.com", name: "Outside User" };
+
+  const joined = await request(
+    buildApp(async (clerkId) => verifiedEmailByUser[clerkId] ?? null),
+    "POST",
+    "/access/join",
+    { code: "PGN-VALID" },
+    "outsider",
+  );
+  assert.equal(joined.status, 201);
+  assert.equal(joined.body.email, "outsider@example.com");
+  assert.equal(joined.body.name, "Outside User");
+  assert.equal(joined.body.status, "pending");
+});
+
+test("resolves an existing member by Clerk user ID without requiring an email claim", async () => {
+  state.users.push({
+    id: state.nextId++,
+    clerk_id: "clerk-owner",
+    name: "Chapter Owner",
+    email: "owner@example.com",
+    role: "admin",
+    status: "active",
+    created_at: new Date("2026-09-16T12:00:00.000Z"),
+  });
+  authByUser.owner = { userId: "clerk-owner", sessionClaims: { sub: "clerk-owner" } };
+
+  const response = await request(
+    buildApp(async () => {
+      throw new Error("existing members must not need an email lookup");
+    }),
+    "GET",
+    "/me",
+    undefined,
+    "owner",
+  );
+  assert.equal(response.status, 200);
+  assert.equal(response.body.email, "owner@example.com");
+});
+
+test("blocks unknown or unverified users when Clerk has no verified email", async () => {
+  state.invites.push({ code: "PGN-VALID", label: "Fall 2026", active: true });
+  authByUser.unknown = { userId: "clerk-unknown", sessionClaims: { sub: "clerk-unknown" } };
+  verifiedEmailByUser["clerk-unknown"] = null;
+
+  const response = await request(
+    buildApp(async (clerkId) => verifiedEmailByUser[clerkId] ?? null),
+    "POST",
+    "/access/join",
+    { code: "PGN-VALID" },
+    "unknown",
+  );
+  assert.equal(response.status, 403);
+  assert.deepEqual(response.body, { error: "A verified email address is required" });
+});
+
+test("rejects invalid chapter codes and accepts valid codes for a verified default-claims user", async () => {
+  state.users.push({
+    id: state.nextId++,
+    clerk_id: "clerk-admin",
+    name: "Chapter Admin",
+    email: "admin@vt.edu",
+    role: "admin",
+    status: "active",
+    created_at: new Date("2026-09-16T12:00:00.000Z"),
+  });
+  state.invites.push({ code: "PGN-VALID", label: "Fall 2026", active: true });
+  authByUser.outsider = { userId: "clerk-outsider", sessionClaims: { sub: "clerk-outsider" } };
+  verifiedEmailByUser["clerk-outsider"] = { email: "outsider@example.com" };
+  const app = buildApp(async (clerkId) => verifiedEmailByUser[clerkId] ?? null);
+
+  const invalid = await request(app, "POST", "/access/join", { code: "PGN-NOPE" }, "outsider");
+  assert.equal(invalid.status, 403);
+  assert.deepEqual(invalid.body, { error: "That chapter code is not valid" });
+
+  const valid = await request(app, "POST", "/access/join", { code: "PGN-VALID" }, "outsider");
+  assert.equal(valid.status, 201);
+  assert.equal(valid.body.email, "outsider@example.com");
+  assert.equal(valid.body.status, "pending");
 });
 
 test("members cannot delete PNMs", async () => {

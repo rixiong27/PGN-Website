@@ -1,4 +1,4 @@
-import { getAuth as clerkGetAuth } from "@clerk/express";
+import { clerkClient, getAuth as clerkGetAuth } from "@clerk/express";
 import { Router, type IRouter, type NextFunction, type Request, type Response } from "express";
 import { pool } from "@workspace/db";
 import { withPhotoWrite } from "../lib/photoCleanup";
@@ -70,12 +70,38 @@ type RecruitmentDependencies = {
   pool: typeof pool;
   getAuth: typeof clerkGetAuth;
   photoStorage: ObjectStorageService;
+  getVerifiedEmail: VerifiedEmailLookup;
 };
+
+type VerifiedIdentity = {
+  email: string;
+  name?: string | null;
+};
+
+type VerifiedEmailLookupResult = VerifiedIdentity | string | null;
+type VerifiedEmailLookup = (clerkId: string) => Promise<VerifiedEmailLookupResult>;
+
+async function getVerifiedEmailFromClerk(clerkId: string): Promise<VerifiedIdentity | null> {
+  const user = await clerkClient.users.getUser(clerkId);
+  const primaryEmail = user.primaryEmailAddressId
+    ? user.emailAddresses.find((address) => address.id === user.primaryEmailAddressId)
+    : undefined;
+  const verifiedEmail = primaryEmail?.verification?.status === "verified"
+    ? primaryEmail
+    : user.emailAddresses.find((address) => address.verification?.status === "verified");
+  if (!verifiedEmail) return null;
+
+  const name = [user.firstName, user.lastName].filter(Boolean).join(" ") || null;
+  return { email: verifiedEmail.emailAddress, name };
+}
+
+let activeGetVerifiedEmail: VerifiedEmailLookup = getVerifiedEmailFromClerk;
 
 export function createRecruitmentRouter(dependencies?: Partial<RecruitmentDependencies>): IRouter {
   activePool = dependencies?.pool ?? pool;
   activePhotoStorage = dependencies?.photoStorage ?? new ObjectStorageService();
   activeGetAuth = dependencies?.getAuth ?? clerkGetAuth;
+  activeGetVerifiedEmail = dependencies?.getVerifiedEmail ?? getVerifiedEmailFromClerk;
   return router;
 }
 
@@ -205,6 +231,26 @@ function roundVoteCount(round: Record<string, unknown>, fallback: number): numbe
   return binarySnapshot(round)?.voteCount ?? fallback;
 }
 
+function claimIdentity(claims: Record<string, unknown>): VerifiedIdentity | null {
+  const email = asString(claims.email ?? claims.email_address).trim().toLowerCase();
+  if (!email || !email.includes("@")) return null;
+
+  return {
+    email,
+    name: asString(claims.name ?? claims.full_name) || null,
+  };
+}
+
+async function resolveVerifiedIdentity(
+  clerkId: string,
+  claims: Record<string, unknown>,
+): Promise<VerifiedIdentity | null> {
+  const fromClaims = claimIdentity(claims);
+  if (fromClaims) return fromClaims;
+  const result = await activeGetVerifiedEmail(clerkId);
+  return typeof result === "string" ? { email: result } : result;
+}
+
 async function ensureMember(req: AuthedRequest, res: Response, next: NextFunction): Promise<void> {
   const auth = activeGetAuth(req);
   const clerkId = auth.userId;
@@ -213,16 +259,10 @@ async function ensureMember(req: AuthedRequest, res: Response, next: NextFunctio
     return;
   }
   const claims = (auth.sessionClaims ?? {}) as Record<string, unknown>;
-  const email = asString(claims.email ?? claims.email_address).trim().toLowerCase();
-  if (!email) {
-    res.status(403).json({ error: "A verified email address is required" });
-    return;
-  }
-
-  const name = asString(claims.name ?? claims.full_name) || email.split("@")[0];
+  const claimedEmail = claimIdentity(claims)?.email ?? null;
   const existing = await activePool.query<MemberRow>(
     "SELECT * FROM pgn_users WHERE clerk_id = $1 OR (lower(email) = $2 AND clerk_id LIKE 'preapproved:%') LIMIT 1",
-    [clerkId, email],
+    [clerkId, claimedEmail],
   );
   if (existing.rows[0]) {
     const member = existing.rows[0];
@@ -235,11 +275,43 @@ async function ensureMember(req: AuthedRequest, res: Response, next: NextFunctio
     } else {
       req.member = member;
     }
-  } else {
-    res.status(403).json({ error: "Join the VT PGN chapter before accessing the workspace" });
+    next();
     return;
   }
-  next();
+
+  let identity: VerifiedIdentity | null;
+  try {
+    identity = await resolveVerifiedIdentity(clerkId, claims);
+  } catch {
+    res.status(503).json({ error: "Unable to verify your email address right now" });
+    return;
+  }
+  if (!identity) {
+    res.status(403).json({ error: "A verified email address is required" });
+    return;
+  }
+
+  const email = identity.email.trim().toLowerCase();
+  if (!email || !email.includes("@")) {
+    res.status(403).json({ error: "A verified email address is required" });
+    return;
+  }
+  const name = identity.name?.trim() || email.split("@")[0];
+  const preapproved = await activePool.query<MemberRow>(
+    "SELECT * FROM pgn_users WHERE lower(email) = $1 AND clerk_id LIKE 'preapproved:%' LIMIT 1",
+    [email],
+  );
+  if (preapproved.rows[0]) {
+    const linked = await activePool.query<MemberRow>(
+      "UPDATE pgn_users SET clerk_id = $1 WHERE id = $2 RETURNING *",
+      [clerkId, preapproved.rows[0].id],
+    );
+    req.member = linked.rows[0] ?? preapproved.rows[0];
+    next();
+    return;
+  }
+
+  res.status(403).json({ error: "Join the VT PGN chapter before accessing the workspace" });
 }
 
 function requireRole(...roles: Role[]) {
@@ -286,11 +358,6 @@ router.post("/access/join", async (req, res): Promise<void> => {
     return;
   }
   const claims = (auth.sessionClaims ?? {}) as Record<string, unknown>;
-  const email = asString(claims.email ?? claims.email_address).trim().toLowerCase();
-  if (!email) {
-    res.status(403).json({ error: "A verified email address is required" });
-    return;
-  }
   const parsed = JoinChapterBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Enter the chapter code" });
@@ -309,7 +376,23 @@ router.post("/access/join", async (req, res): Promise<void> => {
     res.status(201).json(memberView(current.rows[0]));
     return;
   }
-  const name = asString(claims.name ?? claims.full_name) || email.split("@")[0];
+  let identity: VerifiedIdentity | null;
+  try {
+    identity = await resolveVerifiedIdentity(clerkId, claims);
+  } catch {
+    res.status(503).json({ error: "Unable to verify your email address right now" });
+    return;
+  }
+  if (!identity) {
+    res.status(403).json({ error: "A verified email address is required" });
+    return;
+  }
+  const email = identity.email.trim().toLowerCase();
+  if (!email || !email.includes("@")) {
+    res.status(403).json({ error: "A verified email address is required" });
+    return;
+  }
+  const name = identity.name?.trim() || email.split("@")[0];
   const preapproved = await activePool.query<MemberRow>(
     "SELECT * FROM pgn_users WHERE lower(email) = $1 AND clerk_id LIKE 'preapproved:%' AND status = 'active'",
     [email],
