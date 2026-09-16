@@ -507,7 +507,7 @@ router.post("/users", requireRole("super_admin", "admin"), async (req: AuthedReq
   res.status(201).json(memberView(inserted.rows[0]));
 });
 
-router.patch("/users/:id/role", requireRole("super_admin"), async (req: AuthedRequest, res): Promise<void> => {
+router.patch("/users/:id/role", requireRole("super_admin", "admin"), async (req: AuthedRequest, res): Promise<void> => {
   const params = UpdateUserRoleParams.safeParse(req.params);
   const parsed = UpdateUserRoleBody.safeParse(req.body);
   if (!params.success || !parsed.success) { res.status(400).json({ error: "Invalid role" }); return; }
