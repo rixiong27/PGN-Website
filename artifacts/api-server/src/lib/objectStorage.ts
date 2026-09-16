@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import { Readable } from 'stream';
 import { File, Storage } from '@google-cloud/storage';
 
@@ -38,21 +38,42 @@ export class ObjectNotFoundError extends Error {
   }
 }
 
+export class PhotoCreateNotConfirmedError extends Error {
+  constructor() {
+    super('Photo creation was not confirmed by object storage');
+    this.name = 'PhotoCreateNotConfirmedError';
+  }
+}
+
 export class ObjectStorageService {
   constructor() {}
 
+  protected createPhotoId(): string {
+    return randomUUID();
+  }
+
   /** Only the server writes here; no PUT URLs are ever minted for photos/. */
   async saveVerifiedPhoto(photo: { bytes: Buffer; contentType: string }): Promise<string> {
-    const id = randomUUID();
+    const id = this.createPhotoId();
     const { bucketName, objectName } = parseObjectPath(
       `${this.getPrivateObjectDir().replace(/\/$/, '')}/photos/${id}`,
     );
-    await objectStorageClient.bucket(bucketName).file(objectName).save(photo.bytes, {
+    // Independent of the path UUID: even identical-byte collisions must fail.
+    const writeToken = randomBytes(32).toString('hex');
+    const file = objectStorageClient.bucket(bucketName).file(objectName);
+    await file.save(photo.bytes, {
       resumable: false,
       validation: 'crc32c',
       preconditionOpts: { ifGenerationMatch: 0 },
-      metadata: { contentType: photo.contentType },
+      metadata: { contentType: photo.contentType, metadata: { photoWriteToken: writeToken } },
     });
+    // Some App Storage transports acknowledge a conditional no-op as success.
+    // Read after the atomic create, never exists-then-write. Only this attempt's
+    // persisted marker can confirm ownership; never modify/delete on mismatch.
+    const [metadata] = await file.getMetadata();
+    if (!metadata.generation || metadata.metadata?.photoWriteToken !== writeToken) {
+      throw new PhotoCreateNotConfirmedError();
+    }
     return `/objects/photos/${id}`;
   }
 

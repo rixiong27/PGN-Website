@@ -53,22 +53,27 @@ The test uses real signed PUTs and GCS operations to verify:
 - Finalization saves the exact buffer returned by image validation, not the
   subsequently replaced staging bytes, with the verified content type.
 - A forced UUID collision through the real adapter sends `ifGenerationMatch=0`
-  on both outgoing saves and preserves the original bytes and generation.
-  If an error is returned it must be HTTP 412, not an unrelated failure.
+  on every outgoing save and preserves the original bytes and generation.
+  Both identical-byte and different-byte collisions must explicitly reject
+  with HTTP 412 or `PhotoCreateNotConfirmedError`, not an unrelated failure.
 - Replaying the staging URL does not change the finalized bytes or generation;
   changing its target to the final path is rejected with HTTP 403.
 - Enumeration includes both UUID-named uploads and finalized photos, excluding
   nested paths, non-photo assets, and sibling roots; listed deletions preserve
   all unrelated fixtures.
 
-Only UUID generation is temporarily pinned for the collision assertion. A
+Only the adapter's photo ID is pinned for the collision assertion. A
 pass-through SDK request observer checks target equality and generation
 preconditions without modifying requests or retaining URLs or credentials.
 Storage, signing, image validation, listing, and deletion are not mocked.
 This is provider contract coverage, not cleanup-failure recovery or browser testing.
 
-Observed in the development workspace: the provider/SDK resolves the duplicate
-conditional save without surfacing HTTP 412, but leaves both bytes and generation
-unchanged. The test explicitly reports this outcome and checks persisted state;
-it does not treat a resolved promise as evidence that replacement succeeded.
-Making the adapter report this collision as an error is separate follow-up work.
+The transport probes compare streaming saves and File.save with normal request
+IDs versus globally pinned UUIDs. Observed in development: ordinary collisions
+reject with HTTP 412. Globally pinning crypto.randomUUID also pins the SDK's
+gccl-invocation-id, and the duplicate save resolves without writing. This points
+to request replay handling in the transport/provider path, not general SDK
+suppression of HTTP 412. The exact upstream replay implementation is opaque.
+The adapter therefore confirms a fresh, independent per-attempt marker in
+persisted metadata after its atomic create, rejecting missing/mismatched markers.
+No preflight exists check, overwrite, or collision cleanup is performed.

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { syncBuiltinESMExports } from "node:module";
 import { test } from "node:test";
+import { finished } from "node:stream/promises";
 import { imageBytes } from "./photo-fixtures";
 
 // No storage module is imported or provider request made in the default suite.
@@ -17,9 +18,11 @@ test("App Storage preserves verified photos across staging PUT replay", {
   // Never read PRIVATE_OBJECT_DIR, member data, or a database. All operations,
   // including failure teardown, stay under this unpredictable test-only root.
   const prefix = `integration-tests/photo-provider/${crypto.randomUUID()}/`;
-  const { ObjectStorageService, objectStorageClient } = await import("../src/lib/objectStorage");
+  const { ObjectStorageService, objectStorageClient, PhotoCreateNotConfirmedError } = await import("../src/lib/objectStorage");
   const { validatePhotoFile } = await import("../src/lib/photoValidation");
   class IsolatedStorage extends ObjectStorageService {
+    photoId?: string;
+    protected override createPhotoId() { return this.photoId ?? super.createPhotoId(); }
     override getPrivateObjectDir() { return `/${bucketName}/${prefix}private`; }
   }
   const storage = new IsolatedStorage();
@@ -42,6 +45,72 @@ test("App Storage preserves verified photos across staging PUT replay", {
     const original = await imageBytes("png");
     const replacement = await imageBytes("webp");
     assert.notDeepEqual(original, replacement);
+    phase = "raw SDK transport collision probe";
+    // Inspect the SDK's unmodified HTTP response status on a separate object,
+    // without logging response bodies, headers, requests, or credentials.
+    const probe = fileAt("transport-probe");
+    for (const [index, bytes] of [original, replacement].entries()) {
+      const stream = probe.createWriteStream({
+        resumable: false, validation: "crc32c",
+        preconditionOpts: { ifGenerationMatch: 0 },
+      });
+      let status: number | undefined;
+      stream.on("response", (response: { statusCode?: number }) => { status = response.statusCode; });
+      const done = finished(stream);
+      stream.end(bytes);
+      let code: number | undefined;
+      try { await done; } catch (error) {
+        code = (error as { code?: number }).code;
+        assert.equal(code, 412, "Only precondition failure is expected from raw probe");
+      }
+      t.diagnostic(`Raw SDK save ${index + 1}: response status=${status ?? "none"}, error code=${code ?? "none"}`);
+      assert.deepEqual((await probe.download())[0], original);
+    }
+    for (const pinUUID of [false, true]) {
+      const rawFile = fileAt(`save-probe-${pinUUID}`);
+      const fixedUUID = crypto.randomUUID();
+      const pin = pinUUID ? t.mock.method(crypto, "randomUUID", () => fixedUUID) : undefined;
+      syncBuiltinESMExports();
+      try {
+        await rawFile.save(original, { resumable: false, validation: "crc32c", preconditionOpts: { ifGenerationMatch: 0 } });
+        let collisionCode: number | undefined;
+        try {
+          await rawFile.save(replacement, { resumable: false, validation: "crc32c", preconditionOpts: { ifGenerationMatch: 0 } });
+        } catch (error) {
+          collisionCode = (error as { code?: number }).code;
+          assert.equal(collisionCode, 412);
+        }
+        t.diagnostic(`Raw File.save collision (global UUID pinned=${pinUUID}): error code=${collisionCode ?? "none"}`);
+      } finally {
+        pin?.mock.restore();
+        syncBuiltinESMExports();
+      }
+      assert.deepEqual((await rawFile.download())[0], original);
+    }
+    await t.test("adapter rejects acknowledged request replay", async () => {
+      const replayStorage = new IsolatedStorage();
+      replayStorage.photoId = crypto.randomUUID();
+      const requestId = crypto.randomUUID();
+      const pin = t.mock.method(crypto, "randomUUID", () => requestId);
+      syncBuiltinESMExports();
+      try {
+        await replayStorage.saveVerifiedPhoto({ bytes: original, contentType: "image/png" });
+        for (const bytes of [replacement, original]) {
+          await assert.rejects(
+            replayStorage.saveVerifiedPhoto({ bytes, contentType: "image/png" }),
+            (error: unknown) => error instanceof PhotoCreateNotConfirmedError ||
+              (error as { code?: unknown }).code === 412,
+          );
+        }
+      } finally {
+        pin.mock.restore();
+        syncBuiltinESMExports();
+      }
+      const replayFile = fileAt(`private/photos/${replayStorage.photoId}`);
+      assert.deepEqual((await replayFile.download())[0], original);
+      await replayFile.delete({ ifGenerationMatch: (await replayFile.getMetadata())[0].generation });
+    });
+    phase = "signed staging upload";
     const signedURL = await storage.getObjectEntityUploadURL();
     const stagingPath = storage.normalizeObjectEntityPath(signedURL);
     assert.match(stagingPath, /^\/objects\/uploads\/[0-9a-f-]{36}$/);
@@ -60,8 +129,7 @@ test("App Storage preserves verified photos across staging PUT replay", {
     // Pin only the generated identity, not the provider or save implementation.
     // Later, a second adapter call must collide without changing the object.
     const finalId = crypto.randomUUID();
-    const uuidMock = t.mock.method(crypto, "randomUUID", () => finalId);
-    syncBuiltinESMExports();
+    storage.photoId = finalId;
     const writes: Array<{ sameTarget: boolean; createOnly: boolean }> = [];
     const observer = {
       request(options: { qs?: Record<string, unknown> }) {
@@ -79,8 +147,6 @@ test("App Storage preserves verified photos across staging PUT replay", {
       assert.equal(finalPath, `/objects/photos/${finalId}`);
     } finally {
       objectStorageClient.interceptors.splice(objectStorageClient.interceptors.indexOf(observer), 1);
-      uuidMock.mock.restore();
-      syncBuiltinESMExports();
     }
     const finalized = await storage.getObjectEntityFile(finalPath);
     phase = "finalized metadata and bytes";
@@ -138,31 +204,21 @@ test("App Storage preserves verified photos across staging PUT replay", {
     t.diagnostic("Enumeration included both namespaces and excluded all unrelated fixtures");
 
     await t.test("real provider enforces create-only finalization", async () => {
-      const collisionMock = t.mock.method(crypto, "randomUUID", () => finalId);
-      syncBuiltinESMExports();
       objectStorageClient.interceptors.push(observer);
-      let rejectedCode: number | undefined;
       try {
-        await storage.saveVerifiedPhoto({ bytes: replacement, contentType: "image/webp" })
-          .catch((error: unknown) => {
-            const code = (error as { code?: unknown }).code;
-            rejectedCode = typeof code === "number" ? code : -1;
-          });
+        for (const photo of [{ bytes: replacement, contentType: "image/webp" }, verified]) {
+          await assert.rejects(storage.saveVerifiedPhoto(photo), (error: unknown) =>
+            error instanceof PhotoCreateNotConfirmedError ||
+            (error as { code?: unknown }).code === 412,
+          "Both different-byte and identical-byte collisions must explicitly reject");
+        }
       } finally {
         objectStorageClient.interceptors.splice(objectStorageClient.interceptors.indexOf(observer), 1);
-        collisionMock.mock.restore();
-        syncBuiltinESMExports();
       }
       assert.ok(writes.length >= 2, "Both saves must target the same finalized object");
       assert.ok(writes.every((write) => write.createOnly), "Every outgoing save must send ifGenerationMatch=0");
       t.diagnostic("Confirmed outgoing same-target saves both send ifGenerationMatch=0");
-      // The current provider/SDK resolves a conditional no-op instead of
-      // surfacing 412. Do not infer protection from promise rejection alone:
-      // below we require the original bytes AND generation to remain unchanged.
-      if (rejectedCode !== undefined) {
-        assert.equal(rejectedCode, 412, "Only a generation-precondition conflict is acceptable");
-      }
-      t.diagnostic(`Collision outcome: ${rejectedCode === 412 ? "HTTP 412" : "resolved; checking immutable object"}`);
+      t.diagnostic("Both collision attempts explicitly rejected");
     });
     // Report the observed provider outcome without dumping requests or bytes.
     phase = "post-collision integrity";
