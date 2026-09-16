@@ -740,7 +740,20 @@ function Profile() {
 function VotingPage() {
   const queryClient = useQueryClient();
   const { data: user } = useGetMe();
-  const { data: rounds, isLoading, isError, refetch } = useListVotingRounds();
+  const {
+    data: rounds,
+    isLoading,
+    isError,
+    isRefetchError: isRoundsRefetchError,
+    isFetching: isRoundsFetching,
+    dataUpdatedAt: roundsUpdatedAt,
+    refetch,
+  } = useListVotingRounds({
+    query: {
+      queryKey: getListVotingRoundsQueryKey(),
+      refetchInterval: 3000,
+    },
+  });
   const [selected, setSelected] = useState<number | null>(null);
   const [choices, setChoices] = useState<Record<string, 'yes' | 'no'>>({});
   const [voteError, setVoteError] = useState('');
@@ -756,7 +769,29 @@ function VotingPage() {
   const openRounds = rounds?.filter((round) => round.status === 'open') ?? [];
   const closedRounds = rounds?.filter((round) => round.status === 'closed') ?? [];
   const activeRound = rounds?.find((round) => round.id === selected) ?? openRounds[0];
-  const { data: detail } = useGetVotingRound(activeRound?.id ?? 0, { query: { queryKey: getGetVotingRoundQueryKey(activeRound?.id ?? 0), enabled: Boolean(activeRound?.id) } });
+  const {
+    data: detail,
+    isError: isDetailError,
+    isRefetchError: isDetailRefetchError,
+    isFetching: isDetailFetching,
+    dataUpdatedAt: detailUpdatedAt,
+    refetch: refetchDetail,
+  } = useGetVotingRound(activeRound?.id ?? 0, {
+    query: {
+      queryKey: getGetVotingRoundQueryKey(activeRound?.id ?? 0),
+      enabled: Boolean(activeRound?.id),
+      refetchInterval: (query) => activeRound?.status === 'open' && query.state.data?.status !== 'closed' ? 3000 : false,
+    },
+  });
+  const isLiveRefreshError = Boolean(isError || isRoundsRefetchError || (activeRound?.status === 'open' && (isDetailError || isDetailRefetchError)));
+  const freshnessTimestamp = activeRound?.status === 'open' ? detailUpdatedAt || roundsUpdatedAt : roundsUpdatedAt;
+  const freshnessLabel = freshnessTimestamp
+    ? `Last successful update ${new Date(freshnessTimestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })}`
+    : 'Waiting for the first update';
+  const retryLiveUpdates = () => {
+    void refetch();
+    if (activeRound?.status === 'open') void refetchDetail();
+  };
   useEffect(() => {
     if (!activeRound || activeRound.votingMode !== 'binary' || !detail) return;
     setChoices((current) => {
@@ -815,7 +850,7 @@ function VotingPage() {
       })}
     </div>;
   };
-  return <><PageHeader eyebrow="Workspace / Voting" title="Voting rounds" subtitle="Every active brother gets one Yes or No vote. Percentages use the full active chapter electorate." action={isAdmin ? <button className="btn btn-primary" onClick={() => setShowCreate((value) => !value)} data-testid="button-create-round"><Plus size={15} /> Open round</button> : null} />{showCreate ? <form className="card toolbar" onSubmit={submitRound} style={{ display: 'grid', gridTemplateColumns: '1fr 180px 1.6fr auto', gap: 12, marginBottom: 18 }}><div className="field"><label className="field-label" htmlFor="round-name">Round name</label><input id="round-name" required className="input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Second round conversations" data-testid="input-round-name" /></div><div className="field"><label className="field-label" htmlFor="round-deadline">Deadline</label><input id="round-deadline" className="input" type="date" value={form.deadline} onChange={(e) => setForm({ ...form, deadline: e.target.value })} data-testid="input-round-deadline" /></div><div className="field"><label className="field-label">Include PNMs</label><select className="select" multiple value={selectedPnms.map(String)} onChange={(e) => setSelectedPnms(Array.from(e.target.selectedOptions).map((option) => Number(option.value)))} style={{ height: 38 }} data-testid="select-round-pnms">{pnms?.map((pnm) => <option key={pnm.id} value={pnm.id}>{pnm.firstName} {pnm.lastName}</option>)}</select></div><button className="btn btn-primary" type="submit" disabled={createRound.isPending || !selectedPnms.length} data-testid="button-save-round">Open</button></form> : null}{voteError ? <ErrorState message={voteError} /> : null}<div className="card round-card"><div className="section-head"><div><div className="section-title">Open now <span style={{ color: 'hsl(var(--primary))', fontFamily: 'var(--app-font-mono)' }}>{openRounds.length}</span></div><div className="page-subtitle" style={{ fontSize: 12, marginTop: 3 }}>Yes / No choices are private to you until the round closes.</div></div></div>{isLoading ? <LoadingBlock rows={4} /> : isError ? <ErrorState onRetry={() => refetch()} /> : !openRounds.length ? <EmptyState title="No open voting rounds" copy="When a round opens, your PNMs will appear here." icon={ClipboardCheck} /> : openRounds.map((round) => <div key={round.id} onClick={() => setSelected(round.id)} style={{ cursor: 'pointer' }}><div className="round-card-head"><div><div className="round-name">{round.name}</div><div className="round-detail">{round.pnmIds.length} PNMs · {round.voteCount} votes cast{round.electorateCount ? ` · ${round.electorateCount} active brothers` : ''}{round.deadline ? ` · closes ${formatDate(round.deadline)}` : ''}</div></div><div className="row-actions"><StatusBadge value={round.status} />{isAdmin ? <button className="btn btn-secondary btn-sm" onClick={(event) => { event.stopPropagation(); closeRound.mutate({ id: round.id }, { onSuccess: () => { void queryClient.invalidateQueries({ queryKey: getListVotingRoundsQueryKey() }); void queryClient.invalidateQueries({ queryKey: getGetVotingRoundQueryKey(round.id) }); toast.show('Voting round closed.'); } }); }} data-testid={`button-close-round-${round.id}`}>Close round</button> : null}</div></div>{renderResults(round)}</div>)}</div><div className="card round-card"><div className="section-head"><div><div className="section-title">Closed history</div><div className="page-subtitle" style={{ fontSize: 12, marginTop: 3 }}>Past decisions stay available for reference.</div></div></div>{closedRounds.length ? closedRounds.map((round) => <div className="round-item" key={round.id} onClick={() => setSelected(round.id)} style={{ cursor: 'pointer' }}><div><div className="round-name">{round.name}</div><div className="round-detail">{round.pnmIds.length} PNMs · {round.votingMode === 'binary' ? `${round.voteCount} Yes/No votes · ${round.electorateCount ?? 0} active brothers` : `${round.voteCount} legacy 1–5 scores`} · closed {formatDate(round.closedAt)}</div>{renderResults(round)}</div><StatusBadge value={round.status} /></div>) : <EmptyState title="No closed rounds" copy="Closed rounds will appear here after decisions are final." icon={Archive} />}</div><Toast message={toast.message} /></>;
+  return <><PageHeader eyebrow="Workspace / Voting" title="Voting rounds" subtitle="Every active brother gets one Yes or No vote. Percentages use the full active chapter electorate." action={isAdmin ? <button className="btn btn-primary" onClick={() => setShowCreate((value) => !value)} data-testid="button-create-round"><Plus size={15} /> Open round</button> : null} />{showCreate ? <form className="card toolbar" onSubmit={submitRound} style={{ display: 'grid', gridTemplateColumns: '1fr 180px 1.6fr auto', gap: 12, marginBottom: 18 }}><div className="field"><label className="field-label" htmlFor="round-name">Round name</label><input id="round-name" required className="input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Second round conversations" data-testid="input-round-name" /></div><div className="field"><label className="field-label" htmlFor="round-deadline">Deadline</label><input id="round-deadline" className="input" type="date" value={form.deadline} onChange={(e) => setForm({ ...form, deadline: e.target.value })} data-testid="input-round-deadline" /></div><div className="field"><label className="field-label">Include PNMs</label><select className="select" multiple value={selectedPnms.map(String)} onChange={(e) => setSelectedPnms(Array.from(e.target.selectedOptions).map((option) => Number(option.value)))} style={{ height: 38 }} data-testid="select-round-pnms">{pnms?.map((pnm) => <option key={pnm.id} value={pnm.id}>{pnm.firstName} {pnm.lastName}</option>)}</select></div><button className="btn btn-primary" type="submit" disabled={createRound.isPending || !selectedPnms.length} data-testid="button-save-round">Open</button></form> : null}{voteError ? <ErrorState message={voteError} /> : null}<div className="card round-card"><div className="section-head"><div><div className="section-title">Open now <span style={{ color: 'hsl(var(--primary))', fontFamily: 'var(--app-font-mono)' }}>{openRounds.length}</span></div><div className="page-subtitle" style={{ fontSize: 12, marginTop: 3 }}>Aggregate Yes / No totals are visible to the chapter; named votes are Admin-only.</div><div className="page-subtitle" style={{ fontSize: 12, marginTop: 3, color: isLiveRefreshError ? 'hsl(var(--destructive))' : undefined }} role={isLiveRefreshError ? 'alert' : 'status'} data-testid="status-voting-freshness">{isLiveRefreshError ? <>Live updates are temporarily unavailable; showing the last successful totals when available. <button className="btn btn-ghost btn-sm" onClick={retryLiveUpdates} data-testid="button-retry-voting-updates">Retry updates</button></> : <>{freshnessLabel} · Updates every 3 seconds{isRoundsFetching || (activeRound?.status === 'open' && isDetailFetching) ? ' · Refreshing…' : ''}</>}</div></div></div>{isLoading ? <LoadingBlock rows={4} /> : isError ? <ErrorState onRetry={() => refetch()} /> : !openRounds.length ? <EmptyState title="No open voting rounds" copy="When a round opens, your PNMs will appear here." icon={ClipboardCheck} /> : openRounds.map((round) => <div key={round.id} onClick={() => setSelected(round.id)} style={{ cursor: 'pointer' }}><div className="round-card-head"><div><div className="round-name">{round.name}</div><div className="round-detail">{round.pnmIds.length} PNMs · {round.voteCount} votes cast{round.electorateCount ? ` · ${round.electorateCount} active brothers` : ''}{round.deadline ? ` · closes ${formatDate(round.deadline)}` : ''}</div></div><div className="row-actions"><StatusBadge value={round.status} />{isAdmin ? <button className="btn btn-secondary btn-sm" onClick={(event) => { event.stopPropagation(); closeRound.mutate({ id: round.id }, { onSuccess: () => { void queryClient.invalidateQueries({ queryKey: getListVotingRoundsQueryKey() }); void queryClient.invalidateQueries({ queryKey: getGetVotingRoundQueryKey(round.id) }); toast.show('Voting round closed.'); } }); }} data-testid={`button-close-round-${round.id}`}>Close round</button> : null}</div></div>{renderResults(round)}</div>)}</div><div className="card round-card"><div className="section-head"><div><div className="section-title">Closed history</div><div className="page-subtitle" style={{ fontSize: 12, marginTop: 3 }}>Past decisions stay available for reference.</div></div></div>{closedRounds.length ? closedRounds.map((round) => <div className="round-item" key={round.id} onClick={() => setSelected(round.id)} style={{ cursor: 'pointer' }}><div><div className="round-name">{round.name}</div><div className="round-detail">{round.pnmIds.length} PNMs · {round.votingMode === 'binary' ? `${round.voteCount} Yes/No votes · ${round.electorateCount ?? 0} active brothers` : `${round.voteCount} legacy 1–5 scores`} · closed {formatDate(round.closedAt)}</div>{renderResults(round)}</div><StatusBadge value={round.status} /></div>) : <EmptyState title="No closed rounds" copy="Closed rounds will appear here after decisions are final." icon={Archive} />}</div><Toast message={toast.message} /></>;
 }
 
 function VotingRoute() {
